@@ -7,18 +7,22 @@ use serenity::{
         id::GuildId,
         interactions::{
             application_command::{
-                ApplicationCommand,
-                ApplicationCommandInteractionDataOptionValue,
+                ApplicationCommand, ApplicationCommandInteractionDataOptionValue,
                 ApplicationCommandOptionType,
             },
-            Interaction,
-            InteractionResponseType,
+            Interaction, InteractionResponseType,
         },
+        user::User,
     },
     prelude::*,
 };
 
 struct Handler;
+
+struct CommandMember {
+    pub nick: String,
+    pub user: User,
+}
 
 #[async_trait]
 impl EventHandler for Handler {
@@ -27,17 +31,45 @@ impl EventHandler for Handler {
             let content = match command.data.name.as_str() {
                 "날갱" | "nalgang" => "날갱하기".to_string(), // TODO
                 "점수" => {
-                    let options = command.data.options.get(0).expect("Expected user option").resolved.
-                    println!()
-                    "점수를 알려주기".to_string()
-                }, // TODO
+                    let guild_id = command.member.as_ref().unwrap().guild_id;
+
+                    let member: Result<CommandMember, String> = match command.data.options.get(0) {
+                        None => {
+                            let member = command.member.as_ref().expect("Expected guild member");
+                            Ok(CommandMember {
+                                nick: member.nick.clone().unwrap(),
+                                user: member.user.clone(),
+                            })
+                        }
+                        Some(value) => {
+                            let x = value.resolved.as_ref().expect("Expected user object");
+                            match x {
+                                ApplicationCommandInteractionDataOptionValue::User(
+                                    user,
+                                    member,
+                                ) => match member {
+                                    Some(pm) => Ok(CommandMember {
+                                        nick: pm.nick.clone().unwrap_or_else(|| user.name.clone()),
+                                        user: user.clone(),
+                                    }),
+                                    _ => Err("Please provide a guild member".to_string()),
+                                },
+                                _ => Err("Please provide a valid user".to_string()),
+                            }
+                        }
+                    };
+                    match member {
+                        Ok(m) => format!("{}'s id is {}", m.nick, m.user.id),
+                        Err(s) => s,
+                    }
+                } // TODO: 데이터베이스와 상호작용하기
                 /*
                 "등록" => "등록하기".to_string(), // TODO
                 "보내기" => "보내기".to_string(), // TODO
                 "순위표" | "점수표" | "순위" => "순위 출력하기".to_string(),
                 "점수추가" => "점수를 추가하기".to_string(), //TODO
                 */
-                _ => "Not implemented :(".to_string()
+                _ => "Not implemented :(".to_string(),
             };
 
             if let Err(why) = command
@@ -69,26 +101,37 @@ impl EventHandler for Handler {
                     command.name("날갱").description("날갱합니다.")
                 })
                 .create_application_command(|command| {
-                    command.name("점수").description("현재 날갱점수를 확인합니다.").create_option(|option| {
-                        option
-                        .name("이름")
-                        .description("점수를 확인할 사용자")
-                        .kind(ApplicationCommandOptionType::User)
-                        .required(false)
-                    })
+                    command
+                        .name("점수")
+                        .description("현재 날갱점수를 확인합니다.")
+                        .create_option(|option| {
+                            option
+                                .name("이름")
+                                .description("점수를 확인할 사용자")
+                                .kind(ApplicationCommandOptionType::User)
+                                .required(false)
+                        })
                 })
         })
         .await;
 
-        println!("I now have the following guild slash commands: {:#?}", commands);
+        println!(
+            "I now have the following guild slash commands: {:#?}",
+            commands
+        );
 
         let guild_command =
             ApplicationCommand::create_global_application_command(&ctx.http, |command| {
-                command.name("wonderful_command").description("An amazing command")
+                command
+                    .name("wonderful_command")
+                    .description("An amazing command")
             })
             .await;
 
-        println!("I created the following global slash command: {:#?}", guild_command);
+        println!(
+            "I created the following global slash command: {:#?}",
+            guild_command
+        );
     }
 }
 
