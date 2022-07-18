@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS Members
     guild integer NOT NULL,
     score integer,
     combo integer
-)
+);
 
 CREATE TABLE IF NOT EXISTS Attendances
 (
@@ -13,11 +13,11 @@ CREATE TABLE IF NOT EXISTS Attendances
     guild integer NOT NULL,
     hit_message nvarchar,
     hit_timestamp float NOT NULL
-)
+);
 
 CREATE TABLE IF NOT EXISTS AttendanceTimeCount
 (
     guild integer NOT NULL,
     hit_count integer NOT NULL,
     hit_timestamp float NOT NULL
-)
+);
