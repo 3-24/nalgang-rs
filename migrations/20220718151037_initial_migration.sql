@@ -1,23 +1,36 @@
 -- Add migration script here
-CREATE TABLE IF NOT EXISTS Members
+
+CREATE TABLE IF NOT EXISTS Member
 (
-    id integer NOT NULL,
-    guild integer NOT NULL,
+    guild_id integer NOT NULL,
+    user_id integer NOT NULL,
     score integer,
     combo integer
 );
 
-CREATE TABLE IF NOT EXISTS Attendances
+CREATE TABLE IF NOT EXISTS DailyAttendance
 (
-    id integer NOT NULL,
-    guild integer NOT NULL,
+    guild_id integer NOT NULL,
+    user_id integer NOT NULL,
     hit_message nvarchar,
-    hit_timestamp float NOT NULL
+    hit_time integer NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS AttendanceTimeCount
 (
-    guild integer NOT NULL,
-    hit_count integer NOT NULL,
-    hit_timestamp float NOT NULL
+    guild_id integer NOT NULL,
+    hit_count integer NOT NULL DEFAULT 0,
+    hit_time integer NOT NULL DEFAULT 0
+);
+
+/* Stack all attendances */
+CREATE TABLE IF NOT EXISTS AttendanceHistory
+(
+    guild_id integer NOT NULL,
+    user_id integer NOT NULL,
+    hit_message nvarchar,
+    hit_time integer NOT NULL,
+    hit_score integer NOT NULL,
+    hit_combo integer NOT NULL,
+    hit_rank integer NOT NULL
 );

@@ -2,37 +2,177 @@ use std::env;
 
 use serenity::{
     async_trait,
+    client::{Context, EventHandler},
     model::{
+        gateway::GatewayIntents,
         gateway::Ready,
+        guild::Guild,
         id::GuildId,
-        interactions::{
-            application_command::{
-                ApplicationCommand, ApplicationCommandInteractionDataOptionValue,
-                ApplicationCommandOptionType,
-            },
-            Interaction, InteractionResponseType,
+        id::UserId,
+        prelude::command::CommandOptionType,
+        prelude::interaction::{
+            application_command::CommandDataOptionValue, Interaction, InteractionResponseType,
         },
+        timestamp::Timestamp,
         user::User,
     },
-    prelude::*,
+    Client,
 };
 
-struct Handler;
+struct Handler {
+    database: sqlx::SqlitePool,
+}
 
 struct CommandMember {
     pub nick: String,
     pub user: User,
 }
+enum NalgangError {
+    DuplicateAttendance,
+    UnhandledDatabaseError(sqlx::Error),
+}
+
+impl Handler {
+    async fn command_nalgang(
+        &self,
+        user_id: UserId,
+        guild_id: GuildId,
+        time: Timestamp,
+        message: String,
+    ) -> Result<String, NalgangError> {
+        let gid = guild_id.0 as i64;
+        let uid = user_id.0 as i64;
+        let current_time = time.unix_timestamp();
+
+        let user_hit_entry = sqlx::query!(
+            "SELECT hit_time FROM DailyAttendance WHERE guild_id=? AND user_id=? LIMIT 1",
+            gid,
+            uid
+        )
+        .fetch_one(&self.database)
+        .await;
+
+        // Get last hit_count, hit_timestamp from AttendanceTimeCount by guild_id
+        let guild_entry = sqlx::query!(
+            "SELECT hit_count, hit_time FROM 
+                AttendanceTimeCount WHERE guild_id=? LIMIT 1",
+            gid
+        )
+        .fetch_one(&self.database)
+        .await;
+
+        let (hit_rank, combo) = match guild_entry {
+            Ok(x) => {
+                let last_hit_count = x.hit_count;
+                let last_hit_time = x.hit_time;
+                // Closest to KST 6:00 AM
+                let boundary_time = ((last_hit_time - 43200 + 86400 - 1) / 86400) * 86400;
+
+                let rank = if current_time >= boundary_time {
+                    1
+                } else {
+                    // Raise error if user tries to do duplicate hit.
+                    match user_hit_entry {
+                        Ok(y) => {
+                            // boundary_time - 86400 <= t < current_time < boundary_time, then duplicate hit!
+                            let t = y.hit_time;
+                            if (boundary_time - 86400) <= t {
+                                return Err(NalgangError::DuplicateAttendance);
+                            }
+                        }
+                        Err(e) => {
+                            return Err(NalgangError::UnhandledDatabaseError(e));
+                        }
+                    }
+                    last_hit_count + 1
+                };
+
+                sqlx::query!(
+                    "UPDATE AttendanceTimeCount SET hit_count=?, hit_time=? WHERE guild_id=?",
+                    rank,
+                    current_time,
+                    gid
+                )
+                .execute(&self.database)
+                .await
+                .or_else(|e| return Err(NalgangError::UnhandledDatabaseError(e)));
+
+                (rank, 1)
+            }
+            Err(e) => {
+                match e {
+                    sqlx::Error::RowNotFound => {
+                        sqlx::query!(
+                            "INSERT INTO AttendanceTimeCount (guild_id, hit_count, hit_time) VALUES (?, ?, ?)",
+                            gid, 1, current_time
+                        )
+                        .execute(&self.database).await.unwrap();
+                    }
+                    _ => {
+                        return Err(NalgangError::UnhandledDatabaseError(e));
+                    }
+                }
+                (1, 1)
+            }
+        };
+
+        // If (KST 6:00) <= time /\ time < (KST 6:00) + 1 day, combo += 1. Otherwise, combo = 0
+        /*
+        let combo = match user_hit_entry {
+            Ok(x) => {
+                let user_hit_time = x.hit_time;
+                let user_hit_boundary_time = ((user_hit_time - 43200 + 86400 - 1) / 86400) * 86400;
+                todo!()
+            }
+            Err(e) => todo!()
+        };*/
+
+        // get score, combo from Members by (user_id, guild_id)
+        /*
+        let entry = sqlx::query!(
+            "SELECT score, combo FROM Members WHERE guild_id=? AND user_id=? LIMIT 1"
+        );
+        */
+        // Insert hit_message, hit_timestamp into Attendances
+
+        // Based on hit_count and hit_timestamp, calculate the point to be added.
+        // Craft a message with combo, added point.
+        // Insert combo, added point into Members
+        todo!()
+    }
+}
 
 #[async_trait]
 impl EventHandler for Handler {
+    async fn guild_create(&self, _ctx: Context, guild: Guild, is_new: bool) {
+        if is_new {
+            let gid = guild.id.0 as i64;
+            println!("Get new invite from guild {}", gid);
+            sqlx::query!("INSERT INTO AttendanceTimeCount (guild_id) VALUES (?)", gid)
+                .execute(&self.database)
+                .await
+                .unwrap();
+        }
+    }
+
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(command) = interaction {
-            let content = match command.data.name.as_str() {
-                "날갱" | "nalgang" => "날갱하기".to_string(), // TODO
+            let guild_id = command.member.as_ref().unwrap().guild_id;
+            let member = command.member.as_ref().expect("Expected guild member");
+            let command_result = match command.data.name.as_str() {
+                "날갱" | "nalgang" => {
+                    let interaction_time = command.id.created_at();
+                    let result = self
+                        .command_nalgang(
+                            member.user.id,
+                            guild_id,
+                            interaction_time,
+                            "Test".to_string(),
+                        )
+                        .await;
+                    todo!()
+                }
                 "점수" => {
-                    let guild_id = command.member.as_ref().unwrap().guild_id;
-
                     let member: Result<CommandMember, String> = match command.data.options.get(0) {
                         None => {
                             let member = command.member.as_ref().expect("Expected guild member");
@@ -44,10 +184,7 @@ impl EventHandler for Handler {
                         Some(value) => {
                             let x = value.resolved.as_ref().expect("Expected user object");
                             match x {
-                                ApplicationCommandInteractionDataOptionValue::User(
-                                    user,
-                                    member,
-                                ) => match member {
+                                CommandDataOptionValue::User(user, member) => match member {
                                     Some(pm) => Ok(CommandMember {
                                         nick: pm.nick.clone().unwrap_or_else(|| user.name.clone()),
                                         user: user.clone(),
@@ -59,8 +196,8 @@ impl EventHandler for Handler {
                         }
                     };
                     match member {
-                        Ok(m) => format!("{}'s id is {}", m.nick, m.user.id),
-                        Err(s) => s,
+                        Ok(m) => Ok(format!("{}'s id is {}", m.nick, m.user.id)),
+                        Err(s) => Err(s),
                     }
                 } // TODO: 데이터베이스와 상호작용하기
                 /*
@@ -69,9 +206,10 @@ impl EventHandler for Handler {
                 "순위표" | "점수표" | "순위" => "순위 출력하기".to_string(),
                 "점수추가" => "점수를 추가하기".to_string(), //TODO
                 */
-                _ => "Not implemented :(".to_string(),
+                _ => Ok("Not implemented :(".to_string()),
             };
 
+            let content = command_result.unwrap_or("오류가 발생했습니다.".to_string());
             if let Err(why) = command
                 .create_interaction_response(&ctx.http, |response| {
                     response
@@ -108,7 +246,7 @@ impl EventHandler for Handler {
                             option
                                 .name("이름")
                                 .description("점수를 확인할 사용자")
-                                .kind(ApplicationCommandOptionType::User)
+                                .kind(CommandOptionType::User)
                                 .required(false)
                         })
                 })
@@ -121,11 +259,14 @@ impl EventHandler for Handler {
         );
 
         let guild_command =
-            ApplicationCommand::create_global_application_command(&ctx.http, |command| {
-                command
-                    .name("wonderful_command")
-                    .description("An amazing command")
-            })
+            serenity::model::application::command::Command::create_global_application_command(
+                &ctx.http,
+                |command| {
+                    command
+                        .name("wonderful_command")
+                        .description("An amazing command")
+                },
+            )
             .await;
 
         println!(
@@ -140,6 +281,18 @@ async fn main() {
     dotenv::dotenv().expect("Failed to read .env file");
     // Configure the client with your Discord bot token in the environment.
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+    let database = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename("database.sqlite"))
+        .await
+        .expect("Couldn't connect to database");
+
+    sqlx::migrate!("./migrations")
+        .run(&database)
+        .await
+        .expect("Couldn't run database migrations");
+
+    let handler = Handler { database };
 
     // The Application Id is usually the Bot User Id.
     let application_id: u64 = env::var("APPLICATION_ID")
@@ -147,9 +300,14 @@ async fn main() {
         .parse()
         .expect("application id is not a valid id");
 
+    let intents = GatewayIntents::GUILDS
+        | GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT;
+
     // Build our client.
-    let mut client = Client::builder(token)
-        .event_handler(Handler)
+    let mut client = Client::builder(token, intents)
+        .event_handler(handler)
         .application_id(application_id)
         .await
         .expect("Error creating client");
