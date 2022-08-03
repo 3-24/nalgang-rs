@@ -13,8 +13,8 @@ use serenity::{
         prelude::interaction::{
             application_command::CommandDataOptionValue, Interaction, InteractionResponseType,
         },
-        timestamp::Timestamp,
         user::User,
+        timestamp::Timestamp
     },
     Client,
 };
@@ -27,30 +27,100 @@ struct CommandMember {
     pub nick: String,
     pub user: User,
 }
+
+struct NalgangMember {
+    pub user_id: UserId,
+    pub guild_id: GuildId,
+    pub score: Option<i64>,
+    pub combo: Option<i64>
+}
+
+impl NalgangMember {
+    pub fn new(user_id: UserId, guild_id: GuildId) -> Self {
+        NalgangMember { user_id, guild_id, score: None, combo: None }
+    }
+
+    pub fn get_uid(&self) -> i64 {
+        self.user_id.0 as i64
+    }
+
+    pub fn get_gid(&self) -> i64 {
+        self.guild_id.0 as i64
+    }
+
+    pub fn update_score_and_combo(&mut self, score: i64, combo: i64) {
+        self.score = Some(score);
+        self.combo = Some(combo);
+    }
+}
+
 enum NalgangError {
     DuplicateAttendance,
+    DuplicateRegister,
+    MemberNotExist,
     UnhandledDatabaseError(sqlx::Error),
 }
 
 impl Handler {
+    async fn get_member_info(
+        &self,
+        member: &mut NalgangMember
+    ) -> Result<bool, NalgangError> {
+        let uid = member.get_uid();
+        let gid = member.get_gid();
+        let row = sqlx::query!(
+            "SELECT score, combo FROM Member WHERE user_id=? AND guild_id=? LIMIT 1", uid, gid
+        ).fetch_one(&self.database).await;
+        
+        match row {
+            Ok(record) => {
+                member.update_score_and_combo(record.score, record.combo); Ok(true)
+            },
+            Err(e) => match e {
+                sqlx::Error::RowNotFound => Ok(false),
+                _ => Err(NalgangError::UnhandledDatabaseError(e))
+            }
+        }
+    }
+
+    async fn command_register(
+        &self,
+        member: &mut NalgangMember
+    ) -> Result<(), NalgangError> {
+
+        if self.get_member_info(member).await? {
+            return Err(NalgangError::DuplicateRegister)
+        }
+
+        let (uid, gid) = (member.get_uid(), member.get_gid());
+        match sqlx::query!(
+            "INSERT INTO Member (user_id, guild_id) VALUES (?, ?)", uid, gid
+        )
+        .execute(&self.database).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
+        }
+    }
+
     async fn command_nalgang(
         &self,
-        user_id: UserId,
-        guild_id: GuildId,
+        member: &mut NalgangMember,
         time: Timestamp,
         message: String,
     ) -> Result<String, NalgangError> {
-        let gid = guild_id.0 as i64;
-        let uid = user_id.0 as i64;
+
+        if !self.get_member_info(member).await? {
+            return Err(NalgangError::MemberNotExist)
+        }
+
+        let (gid, uid) = (member.get_gid(), member.get_uid());
         let current_time = time.unix_timestamp();
 
         let user_hit_entry = sqlx::query!(
             "SELECT hit_time FROM DailyAttendance WHERE guild_id=? AND user_id=? LIMIT 1",
-            gid,
-            uid
-        )
-        .fetch_one(&self.database)
-        .await;
+            gid, uid)
+            .fetch_one(&self.database)
+            .await;
 
         // Get last hit_count, hit_timestamp from AttendanceTimeCount by guild_id
         let guild_entry = sqlx::query!(
@@ -159,13 +229,24 @@ impl EventHandler for Handler {
         if let Interaction::ApplicationCommand(command) = interaction {
             let guild_id = command.member.as_ref().unwrap().guild_id;
             let member = command.member.as_ref().expect("Expected guild member");
+            let mut nalgang_member = NalgangMember::new(member.user.id, guild_id);
             let command_result = match command.data.name.as_str() {
+                "등록" | "register" => {
+                    let res = self.command_register(&mut nalgang_member).await;
+                    match res {
+                        Ok(()) => Ok("등록되었습니다".to_string()),
+                        Err(e) => match e {
+                            NalgangError::DuplicateRegister => Ok("이미 등록되었습니다".to_string()),
+                            _ => todo!()
+                        }
+                    }
+                }
+
                 "날갱" | "nalgang" => {
                     let interaction_time = command.id.created_at();
                     let result = self
                         .command_nalgang(
-                            member.user.id,
-                            guild_id,
+                            &mut nalgang_member,
                             interaction_time,
                             "Test".to_string(),
                         )
@@ -233,10 +314,13 @@ impl EventHandler for Handler {
                 .expect("GUILD_ID must be an integer"),
         );
 
-        let commands = GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
+        let _commands = GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
             commands
                 .create_application_command(|command| {
                     command.name("날갱").description("날갱합니다.")
+                })
+                .create_application_command(|command| {
+                    command.name("등록").description("날갱 시스템에 등록합니다.")
                 })
                 .create_application_command(|command| {
                     command
@@ -252,27 +336,6 @@ impl EventHandler for Handler {
                 })
         })
         .await;
-
-        println!(
-            "I now have the following guild slash commands: {:#?}",
-            commands
-        );
-
-        let guild_command =
-            serenity::model::application::command::Command::create_global_application_command(
-                &ctx.http,
-                |command| {
-                    command
-                        .name("wonderful_command")
-                        .description("An amazing command")
-                },
-            )
-            .await;
-
-        println!(
-            "I created the following global slash command: {:#?}",
-            guild_command
-        );
     }
 }
 

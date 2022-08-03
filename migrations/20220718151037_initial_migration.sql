@@ -4,8 +4,8 @@ CREATE TABLE IF NOT EXISTS Member
 (
     guild_id integer NOT NULL,
     user_id integer NOT NULL,
-    score integer,
-    combo integer
+    score integer NOT NULL DEFAULT 0,
+    combo integer NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS DailyAttendance
