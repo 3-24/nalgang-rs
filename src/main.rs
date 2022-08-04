@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, fmt};
 
 use serenity::{
     async_trait,
@@ -13,7 +13,6 @@ use serenity::{
         prelude::interaction::{
             application_command::CommandDataOptionValue, Interaction, InteractionResponseType,
         },
-        user::User,
         timestamp::Timestamp
     },
     Client,
@@ -23,21 +22,17 @@ struct Handler {
     database: sqlx::SqlitePool,
 }
 
-struct CommandMember {
-    pub nick: String,
-    pub user: User,
-}
-
 struct NalgangMember {
     pub user_id: UserId,
     pub guild_id: GuildId,
     pub score: Option<i64>,
-    pub combo: Option<i64>
+    pub combo: Option<i64>,
+    pub hit_time: Option<i64>,
 }
 
 impl NalgangMember {
     pub fn new(user_id: UserId, guild_id: GuildId) -> Self {
-        NalgangMember { user_id, guild_id, score: None, combo: None }
+        NalgangMember { user_id, guild_id, score: None, combo: None, hit_time: None }
     }
 
     pub fn get_uid(&self) -> i64 {
@@ -48,18 +43,61 @@ impl NalgangMember {
         self.guild_id.0 as i64
     }
 
-    pub fn update_score_and_combo(&mut self, score: i64, combo: i64) {
+    pub fn update_data(&mut self, score: i64, combo: i64, hit_time: i64) {
         self.score = Some(score);
         self.combo = Some(combo);
+        self.hit_time = Some(hit_time);
     }
+
 }
 
 enum NalgangError {
     DuplicateAttendance,
     DuplicateRegister,
     MemberNotExist,
-    UnhandledDatabaseError(sqlx::Error),
+    // Errors that are not expected.
+    UnhandledDatabaseError(String, sqlx::Error),
+    NotImplemented
 }
+
+impl fmt::Display for NalgangError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            NalgangError::UnhandledDatabaseError(s, e) => format!("UnhandledDatabaseError: {}\n Query: {}", e, s),
+            NalgangError::NotImplemented => "NotImplemented".to_string(),
+            NalgangError::MemberNotExist => "MemberNotExist".to_string(),
+            NalgangError::DuplicateRegister => "DuplicateRegister".to_string(),
+            NalgangError::DuplicateAttendance => "DuplicateAttendance".to_string()
+        };
+        write!(f, "{}", s)
+    }
+}
+
+fn timestamp_round_up(time: i64, offset: i64) -> i64 {
+    // One day is 86400
+    ((time - offset - 1) / 86400 + 1) * 86400 + offset
+}
+
+fn earned_attendance_point(rank: i64, combo: i64) -> i64 {
+    let mut earned_point = match rank {
+        0 => 10,
+        1 => 5,
+        2 => 3,
+        _ => 1
+    };
+
+    if combo % 7 == 0 {
+        earned_point += 20;
+    }
+    if combo % 30 == 0 {
+        earned_point += 100;
+    }
+    if combo % 365 == 1500 {
+        earned_point += 1500
+    }
+    earned_point
+}
+
 
 impl Handler {
     async fn get_member_info(
@@ -69,17 +107,52 @@ impl Handler {
         let uid = member.get_uid();
         let gid = member.get_gid();
         let row = sqlx::query!(
-            "SELECT score, combo FROM Member WHERE user_id=? AND guild_id=? LIMIT 1", uid, gid
+            "SELECT score, combo, hit_time FROM Member WHERE user_id=? AND guild_id=? LIMIT 1", uid, gid
         ).fetch_one(&self.database).await;
         
         match row {
             Ok(record) => {
-                member.update_score_and_combo(record.score, record.combo); Ok(true)
+                member.update_data(record.score, record.combo, record.hit_time); Ok(true)
             },
             Err(e) => match e {
                 sqlx::Error::RowNotFound => Ok(false),
-                _ => Err(NalgangError::UnhandledDatabaseError(e))
+                _ => Err(NalgangError::UnhandledDatabaseError(format!("SELECT Member"), e))
             }
+        }
+    }
+
+    async fn update_member_info(
+        &self,
+        member: &NalgangMember
+    ) -> Result<(), NalgangError> {
+        let (score, combo, hit_time, uid, gid) = (
+            member.score.unwrap(), member.combo.unwrap(), member.hit_time.unwrap(), member.get_uid(), member.get_gid()
+        );
+        match sqlx::query!(
+            "UPDATE Member SET score=?, combo=?, hit_time=? WHERE guild_id=? AND user_id=?",
+            score, combo, hit_time, gid, uid
+        ).execute(&self.database).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(NalgangError::UnhandledDatabaseError(format!("Update Member"), e))
+        }
+    }
+
+    async fn daily_attendance_clear(&self, gid: i64) -> Result<(), NalgangError> {
+        match sqlx::query!(
+            "DELETE FROM DailyAttendance WHERE guild_id=?", gid
+        ).execute(&self.database).await {
+            Err(e) => Err(NalgangError::UnhandledDatabaseError(format!("DELETE DailyAttendance"), e)),
+            Ok(_) => Ok(())
+        }
+    }
+
+    async fn command_point(
+        &self,
+        member: &mut NalgangMember
+    ) -> Result<(), NalgangError> {
+        match self.get_member_info(member).await? {
+            true => Ok(()),
+            false => Err(NalgangError::MemberNotExist)
         }
     }
 
@@ -98,7 +171,7 @@ impl Handler {
         )
         .execute(&self.database).await {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
+            Err(e) => Err(NalgangError::UnhandledDatabaseError(format!("INSERT Member"), e))
         }
     }
 
@@ -107,108 +180,74 @@ impl Handler {
         member: &mut NalgangMember,
         time: Timestamp,
         message: String,
-    ) -> Result<String, NalgangError> {
+    ) -> Result<i64, NalgangError> {
 
         if !self.get_member_info(member).await? {
             return Err(NalgangError::MemberNotExist)
         }
 
-        let (gid, uid) = (member.get_gid(), member.get_uid());
+        let (gid, uid, member_hit_time) = (member.get_gid(), member.get_uid(), member.hit_time.unwrap());
         let current_time = time.unix_timestamp();
-
-        let user_hit_entry = sqlx::query!(
-            "SELECT hit_time FROM DailyAttendance WHERE guild_id=? AND user_id=? LIMIT 1",
-            gid, uid)
-            .fetch_one(&self.database)
-            .await;
 
         // Get last hit_count, hit_timestamp from AttendanceTimeCount by guild_id
         let guild_entry = sqlx::query!(
             "SELECT hit_count, hit_time FROM 
                 AttendanceTimeCount WHERE guild_id=? LIMIT 1",
-            gid
-        )
-        .fetch_one(&self.database)
-        .await;
+            gid)
+            .fetch_one(&self.database)
+            .await.or_else(|e| Err(NalgangError::UnhandledDatabaseError(format!("SELECT AttendanceTimeCount"), e)))?;
+        let guild_hit_count = guild_entry.hit_count;
+        let guild_hit_time = guild_entry.hit_time;
+        // KST (6:00=30:00) is UTC 21:00.
+        let rank_boundary_time = timestamp_round_up(guild_hit_time, 3600 * 21);
+        let combo_boundary_time = timestamp_round_up(member_hit_time, 3600 * 21) + 3600 * 24;
 
-        let (hit_rank, combo) = match guild_entry {
-            Ok(x) => {
-                let last_hit_count = x.hit_count;
-                let last_hit_time = x.hit_time;
-                // Closest to KST 6:00 AM
-                let boundary_time = ((last_hit_time - 43200 + 86400 - 1) / 86400) * 86400;
-
-                let rank = if current_time >= boundary_time {
-                    1
-                } else {
-                    // Raise error if user tries to do duplicate hit.
-                    match user_hit_entry {
-                        Ok(y) => {
-                            // boundary_time - 86400 <= t < current_time < boundary_time, then duplicate hit!
-                            let t = y.hit_time;
-                            if (boundary_time - 86400) <= t {
-                                return Err(NalgangError::DuplicateAttendance);
-                            }
-                        }
-                        Err(e) => {
-                            return Err(NalgangError::UnhandledDatabaseError(e));
-                        }
-                    }
-                    last_hit_count + 1
-                };
-
-                sqlx::query!(
-                    "UPDATE AttendanceTimeCount SET hit_count=?, hit_time=? WHERE guild_id=?",
-                    rank,
-                    current_time,
-                    gid
-                )
-                .execute(&self.database)
-                .await
-                .or_else(|e| return Err(NalgangError::UnhandledDatabaseError(e)));
-
-                (rank, 1)
+        let rank = if current_time >= rank_boundary_time {
+            self.daily_attendance_clear(gid).await?;                   // TODO: Schedule the delete query.
+            0
+        } else {
+            // Raise error if user tries to do duplicate hit.
+            // boundary_time - 86400 <= t < current_time < boundary_time, then duplicate hit!
+            if (rank_boundary_time - 86400) <= member_hit_time {
+                return Err(NalgangError::DuplicateAttendance);
             }
-            Err(e) => {
-                match e {
-                    sqlx::Error::RowNotFound => {
-                        sqlx::query!(
-                            "INSERT INTO AttendanceTimeCount (guild_id, hit_count, hit_time) VALUES (?, ?, ?)",
-                            gid, 1, current_time
-                        )
-                        .execute(&self.database).await.unwrap();
-                    }
-                    _ => {
-                        return Err(NalgangError::UnhandledDatabaseError(e));
-                    }
-                }
-                (1, 1)
-            }
+            guild_hit_count + 1
         };
 
-        // If (KST 6:00) <= time /\ time < (KST 6:00) + 1 day, combo += 1. Otherwise, combo = 0
-        /*
-        let combo = match user_hit_entry {
-            Ok(x) => {
-                let user_hit_time = x.hit_time;
-                let user_hit_boundary_time = ((user_hit_time - 43200 + 86400 - 1) / 86400) * 86400;
-                todo!()
-            }
-            Err(e) => todo!()
-        };*/
+        let _ = sqlx::query!(
+            "UPDATE AttendanceTimeCount SET hit_count=?, hit_time=? WHERE guild_id=?",
+            rank,
+            current_time,
+            gid
+        )
+        .execute(&self.database)
+        .await
+        .or_else(|e| return Err(NalgangError::UnhandledDatabaseError(format!("UPDATE AttendanceTimeCount"), e)))?;
+        
+        let combo = if current_time >= combo_boundary_time { 1 } else { member.combo.unwrap() + 1 };
+        let earned_point = earned_attendance_point(rank, combo);
+        let new_score = member.score.unwrap() + earned_point;
+        // Update Member
+        member.update_data(new_score, combo, current_time);
+        self.update_member_info(member).await?;
 
-        // get score, combo from Members by (user_id, guild_id)
-        /*
-        let entry = sqlx::query!(
-            "SELECT score, combo FROM Members WHERE guild_id=? AND user_id=? LIMIT 1"
-        );
-        */
-        // Insert hit_message, hit_timestamp into Attendances
+        // Update DailyAttendance
+        let _ = sqlx::query!(
+            "INSERT INTO DailyAttendance (guild_id, user_id, hit_message, hit_time) VALUES (?, ?, ?, ?)",
+            gid, uid, message, current_time
+        ).execute(&self.database).await.or_else(|e| Err(
+            NalgangError::UnhandledDatabaseError(format!("INSERT DailyAttendance"), e)))?;
 
-        // Based on hit_count and hit_timestamp, calculate the point to be added.
-        // Craft a message with combo, added point.
-        // Insert combo, added point into Members
-        todo!()
+        // Insert AttendanceHistory
+        let _ = sqlx::query!(
+            "INSERT INTO AttendanceHistory (guild_id, user_id, hit_message, hit_time, hit_score, hit_combo, hit_rank)
+                VALUES (?, ?, ?, ?, ?, ?, ?)",
+            gid, uid, message, current_time, new_score, combo, rank
+        ).execute(&self.database).await.or_else(|e| Err(
+            NalgangError::UnhandledDatabaseError(format!("INSERT AttendanceHistory"), e)))?;
+
+        // TODO: Retrieve today's attendance board
+        Ok(earned_point)
     }
 }
 
@@ -229,9 +268,9 @@ impl EventHandler for Handler {
         if let Interaction::ApplicationCommand(command) = interaction {
             let guild_id = command.member.as_ref().unwrap().guild_id;
             let member = command.member.as_ref().expect("Expected guild member");
-            let mut nalgang_member = NalgangMember::new(member.user.id, guild_id);
             let command_result = match command.data.name.as_str() {
                 "등록" | "register" => {
+                    let mut nalgang_member = NalgangMember::new(member.user.id, guild_id);
                     let res = self.command_register(&mut nalgang_member).await;
                     match res {
                         Ok(()) => Ok("등록되었습니다".to_string()),
@@ -243,6 +282,7 @@ impl EventHandler for Handler {
                 }
 
                 "날갱" | "nalgang" => {
+                    let mut nalgang_member = NalgangMember::new(member.user.id, guild_id);
                     let interaction_time = command.id.created_at();
                     let result = self
                         .command_nalgang(
@@ -251,46 +291,51 @@ impl EventHandler for Handler {
                             "Test".to_string(),
                         )
                         .await;
-                    todo!()
+                    match result {
+                        Ok(earned_point) => Ok(format!(
+                            "{}님이 날갱해서 {}점을 얻었습니다!", member.nick.clone().unwrap(), earned_point)),
+                        Err(e) => Err(e)
+                    }
                 }
                 "점수" => {
-                    let member: Result<CommandMember, String> = match command.data.options.get(0) {
-                        None => {
-                            let member = command.member.as_ref().expect("Expected guild member");
-                            Ok(CommandMember {
-                                nick: member.nick.clone().unwrap(),
-                                user: member.user.clone(),
-                            })
-                        }
+                    let (user, name) = match command.data.options.get(0) {
+                        None => (member.user.clone(), member.nick.clone().unwrap_or("Test".to_string())),
                         Some(value) => {
-                            let x = value.resolved.as_ref().expect("Expected user object");
+                            let x = value.resolved.as_ref().unwrap();
                             match x {
-                                CommandDataOptionValue::User(user, member) => match member {
-                                    Some(pm) => Ok(CommandMember {
-                                        nick: pm.nick.clone().unwrap_or_else(|| user.name.clone()),
-                                        user: user.clone(),
-                                    }),
-                                    _ => Err("Please provide a guild member".to_string()),
-                                },
-                                _ => Err("Please provide a valid user".to_string()),
+                                CommandDataOptionValue::User(user, pm) =>
+                                 (user.clone(), pm.clone().unwrap().nick.clone().unwrap_or_else(|| user.name.clone())),
+                                _ => todo!()
                             }
                         }
                     };
-                    match member {
-                        Ok(m) => Ok(format!("{}'s id is {}", m.nick, m.user.id)),
-                        Err(s) => Err(s),
+
+                    let mut nalgang_member = NalgangMember::new(user.id, guild_id);
+
+                    match self.command_point(&mut nalgang_member).await {
+                        Ok(()) => Ok(format!(
+                            "{}님의 점수는 {}점입니다. {}연속 출석중입니다.", name, nalgang_member.score.unwrap(), nalgang_member.combo.unwrap()
+                        )),
+                        Err(e) => Err(e)
                     }
+
                 } // TODO: 데이터베이스와 상호작용하기
                 /*
-                "등록" => "등록하기".to_string(), // TODO
                 "보내기" => "보내기".to_string(), // TODO
                 "순위표" | "점수표" | "순위" => "순위 출력하기".to_string(),
                 "점수추가" => "점수를 추가하기".to_string(), //TODO
                 */
-                _ => Ok("Not implemented :(".to_string()),
+                _ => Err(NalgangError::NotImplemented)
             };
 
-            let content = command_result.unwrap_or("오류가 발생했습니다.".to_string());
+            let content = match command_result {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("{}", e);
+                    "오류가 발생했습니다.".to_string()
+                }
+            };
+
             if let Err(why) = command
                 .create_interaction_response(&ctx.http, |response| {
                     response
