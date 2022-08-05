@@ -6,7 +6,7 @@ use serenity::{
     model::{
         gateway::GatewayIntents,
         gateway::Ready,
-        guild::Guild,
+        guild::{Guild, Member},
         id::GuildId,
         id::UserId,
         prelude::command::CommandOptionType,
@@ -32,7 +32,7 @@ struct NalgangMember {
 
 impl NalgangMember {
     pub fn new(user_id: UserId, guild_id: GuildId) -> Self {
-        NalgangMember { user_id, guild_id, score: None, combo: None, hit_time: None }
+        NalgangMember { user_id, guild_id, score: None, combo: None, hit_time: None}
     }
 
     pub fn get_uid(&self) -> i64 {
@@ -48,12 +48,12 @@ impl NalgangMember {
         self.combo = Some(combo);
         self.hit_time = Some(hit_time);
     }
-
 }
 
 enum NalgangError {
     DuplicateAttendance,
-    DuplicateRegister,
+    DuplicateMemberRegister,
+    DuplicateGuildRegister,
     MemberNotExist,
     // Errors that are not expected.
     UnhandledDatabaseError(String, sqlx::Error),
@@ -66,7 +66,8 @@ impl fmt::Display for NalgangError {
             NalgangError::UnhandledDatabaseError(s, e) => format!("UnhandledDatabaseError: {}\n Query: {}", e, s),
             NalgangError::NotImplemented => "NotImplemented".to_string(),
             NalgangError::MemberNotExist => "MemberNotExist".to_string(),
-            NalgangError::DuplicateRegister => "DuplicateRegister".to_string(),
+            NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
+            NalgangError::DuplicateGuildRegister => "DuplicateGuildRegister".to_string(),
             NalgangError::DuplicateAttendance => "DuplicateAttendance".to_string()
         };
         write!(f, "{}", s)
@@ -146,6 +147,25 @@ impl Handler {
         }
     }
 
+    async fn register_guild(
+        &self,
+        gid: i64
+    ) -> Result<(), NalgangError> {
+        match sqlx::query_scalar!("SELECT EXISTS (SELECT (1) FROM AttendanceTimeCount WHERE guild_id=? LIMIT 1)", gid)
+            .fetch_one(&self.database).await {
+            Ok(1) => return Err(NalgangError::DuplicateGuildRegister),
+            Ok(0) => (),
+            Err(e) => return Err(NalgangError::UnhandledDatabaseError("SELECT EXISTS".to_string(), e)),
+            _ => unreachable!()
+        };
+        
+        match sqlx::query!("INSERT INTO AttendanceTimeCount (guild_id) VALUES (?)", gid)
+            .execute(&self.database).await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(NalgangError::UnhandledDatabaseError("INSERT INTO AttendanceTimeCount".to_string(), e))
+            }
+    }
+
     async fn command_point(
         &self,
         member: &mut NalgangMember
@@ -162,7 +182,7 @@ impl Handler {
     ) -> Result<(), NalgangError> {
 
         if self.get_member_info(member).await? {
-            return Err(NalgangError::DuplicateRegister)
+            return Err(NalgangError::DuplicateMemberRegister)
         }
 
         let (uid, gid) = (member.get_uid(), member.get_gid());
@@ -255,28 +275,38 @@ impl Handler {
 impl EventHandler for Handler {
     async fn guild_create(&self, _ctx: Context, guild: Guild, is_new: bool) {
         if is_new {
-            let gid = guild.id.0 as i64;
-            println!("Get new invite from guild {}", gid);
-            sqlx::query!("INSERT INTO AttendanceTimeCount (guild_id) VALUES (?)", gid)
-                .execute(&self.database)
-                .await
-                .unwrap();
+            match self.register_guild(guild.id.0 as i64).await {
+                Ok(()) => (),
+                Err(e) => {
+                    println!("{}", e)
+                }
+            }
         }
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(command) = interaction {
-            let guild_id = command.member.as_ref().unwrap().guild_id;
             let member = command.member.as_ref().expect("Expected guild member");
+            let guild_id = member.guild_id;
             let command_result = match command.data.name.as_str() {
+                "서버등록" => {
+                    let res = self.register_guild(guild_id.0 as i64).await;
+                    match res {
+                        Ok(()) => Ok("서버가 등록되었습니다.".to_string()),
+                        Err(e) => match e {
+                            NalgangError::DuplicateGuildRegister => Ok("이미 등록된 서버입니다.".to_string()),
+                            _ => Err(e)
+                        }
+                    }
+                }
                 "등록" | "register" => {
                     let mut nalgang_member = NalgangMember::new(member.user.id, guild_id);
                     let res = self.command_register(&mut nalgang_member).await;
                     match res {
                         Ok(()) => Ok("등록되었습니다".to_string()),
                         Err(e) => match e {
-                            NalgangError::DuplicateRegister => Ok("이미 등록되었습니다".to_string()),
-                            _ => todo!()
+                            NalgangError::DuplicateMemberRegister => Ok("이미 등록되었습니다".to_string()),
+                            _ => Err(e)
                         }
                     }
                 }
