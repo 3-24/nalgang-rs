@@ -1,4 +1,4 @@
-use std::{env, fmt};
+use std::{env, fmt, borrow::Cow};
 
 use serenity::{
     async_trait,
@@ -27,12 +27,17 @@ struct NalgangMember {
     pub guild_id: GuildId,
     pub score: Option<i64>,
     pub combo: Option<i64>,
-    pub hit_time: Option<i64>,
+    pub hit_time: Option<i64>
 }
 
+// Wrapper for Serenity guild member
 impl NalgangMember {
-    pub fn new(user_id: UserId, guild_id: GuildId) -> Self {
-        NalgangMember { user_id, guild_id, score: None, combo: None, hit_time: None}
+    pub fn new(member: &Member) -> Self {
+        NalgangMember {user_id: member.user.id, guild_id: member.guild_id, score: None, combo: None, hit_time: None}
+    }
+
+    pub fn new_explict(user_id: UserId, guild_id: GuildId) -> Self {
+        NalgangMember {user_id, guild_id, score: None, combo: None, hit_time: None}
     }
 
     pub fn get_uid(&self) -> i64 {
@@ -287,12 +292,12 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::ApplicationCommand(command) = interaction {
             let member = command.member.as_ref().expect("Expected guild member");
-            let guild_id = member.guild_id;
+            let mut nalgang_member = NalgangMember::new(member);
             let command_result = match command.data.name.as_str() {
                 "서버등록" => {
-                    let res = self.register_guild(guild_id.0 as i64).await;
+                    let res = self.register_guild(nalgang_member.get_gid()).await;
                     match res {
-                        Ok(()) => Ok("서버가 등록되었습니다.".to_string()),
+                        Ok(()) => Ok("서버를 등록했습니다.".to_string()),
                         Err(e) => match e {
                             NalgangError::DuplicateGuildRegister => Ok("이미 등록된 서버입니다.".to_string()),
                             _ => Err(e)
@@ -300,53 +305,66 @@ impl EventHandler for Handler {
                     }
                 }
                 "등록" | "register" => {
-                    let mut nalgang_member = NalgangMember::new(member.user.id, guild_id);
                     let res = self.command_register(&mut nalgang_member).await;
                     match res {
-                        Ok(()) => Ok("등록되었습니다".to_string()),
+                        Ok(()) => Ok("계정을 등록했습니다.".to_string()),
                         Err(e) => match e {
-                            NalgangError::DuplicateMemberRegister => Ok("이미 등록되었습니다".to_string()),
+                            NalgangError::DuplicateMemberRegister => Ok(format!("{}님은 이미 등록되었습니다.", member.display_name())),
                             _ => Err(e)
                         }
                     }
                 }
 
                 "날갱" | "nalgang" => {
-                    let mut nalgang_member = NalgangMember::new(member.user.id, guild_id);
                     let interaction_time = command.id.created_at();
                     let result = self
                         .command_nalgang(
                             &mut nalgang_member,
                             interaction_time,
-                            "Test".to_string(),
+                            "Test".to_string(),             // TODO: Fix nalgang message
                         )
                         .await;
                     match result {
                         Ok(earned_point) => Ok(format!(
-                            "{}님이 날갱해서 {}점을 얻었습니다!", member.nick.clone().unwrap(), earned_point)),
-                        Err(e) => Err(e)
+                            "{}님이 날갱해서 {}점을 얻었습니다!", member.display_name(), earned_point)),
+                        Err(e) => match e {
+                            NalgangError::DuplicateAttendance => Ok(format!("{}님은 이미 날갱했습니다.", member.display_name())),
+                            NalgangError::MemberNotExist => Ok("등록되지 않은 계정입니다.".to_string()),
+                            _ => Err(e)
+                        }
                     }
                 }
                 "점수" => {
-                    let (user, name) = match command.data.options.get(0) {
-                        None => (member.user.clone(), member.nick.clone().unwrap_or("Test".to_string())),
+                    let (mut target_member, name) = match command.data.options.get(0) {
+                        None => (nalgang_member, member.display_name()),
                         Some(value) => {
-                            let x = value.resolved.as_ref().unwrap();
-                            match x {
-                                CommandDataOptionValue::User(user, pm) =>
-                                 (user.clone(), pm.clone().unwrap().nick.clone().unwrap_or_else(|| user.name.clone())),
-                                _ => todo!()
+                            match value.resolved.as_ref().unwrap() {
+                                CommandDataOptionValue::User(user, pm) => {
+                                    let display_name = match pm {
+                                        Some(inner) => {
+                                            match inner.nick.as_ref() {
+                                                Some(s) => Cow::Borrowed(s),
+                                                None => Cow::Owned(user.name.clone())
+                                            }
+                                        }
+                                        None => Cow::Owned(user.name.clone())
+                                    };
+
+                                    (NalgangMember::new_explict(user.id, member.guild_id), display_name)
+                                },
+                                _ => unreachable!()
                             }
                         }
                     };
 
-                    let mut nalgang_member = NalgangMember::new(user.id, guild_id);
-
-                    match self.command_point(&mut nalgang_member).await {
+                    match self.command_point(&mut target_member).await {
                         Ok(()) => Ok(format!(
-                            "{}님의 점수는 {}점입니다. {}연속 출석중입니다.", name, nalgang_member.score.unwrap(), nalgang_member.combo.unwrap()
+                            "{}님의 점수는 {}점입니다. {}연속 출석중입니다.", name, target_member.score.unwrap(), target_member.combo.unwrap()
                         )),
-                        Err(e) => Err(e)
+                        Err(e) => match e {
+                            NalgangError::MemberNotExist => Ok("등록되지 않은 계정입니다.".to_string()),
+                            _ => Err(e)
+                        }
                     }
 
                 } // TODO: 데이터베이스와 상호작용하기
@@ -409,6 +427,9 @@ impl EventHandler for Handler {
                                 .required(false)
                         })
                 })
+                .create_application_command(|command| {
+                    command.name("서버등록").description("서버를 날갱 시스템에 등록합니다.")
+                })
         })
         .await;
     }
@@ -417,7 +438,7 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().expect("Failed to read .env file");
-    // Configure the client with your Discord bot token in the environment.
+    
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
     let database = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(5)
@@ -432,7 +453,6 @@ async fn main() {
 
     let handler = Handler { database };
 
-    // The Application Id is usually the Bot User Id.
     let application_id: u64 = env::var("APPLICATION_ID")
         .expect("Expected an application id in the environment")
         .parse()
@@ -443,17 +463,12 @@ async fn main() {
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
 
-    // Build our client.
     let mut client = Client::builder(token, intents)
         .event_handler(handler)
         .application_id(application_id)
         .await
         .expect("Error creating client");
-
-    // Finally, start a single shard, and start listening to events.
-    //
-    // Shards will automatically attempt to reconnect, and will perform
-    // exponential backoff until it reconnects.
+    
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
