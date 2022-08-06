@@ -53,14 +53,15 @@ enum NalgangError {
     DuplicateMemberRegister,
     DuplicateGuildRegister,
     MemberNotExist,
-    UnhandledDatabaseError(sqlx::Error),
+    UnhandledDatabaseError{error: sqlx::Error, file: &'static str, line: u32},
     NotImplemented
 }
 
 impl fmt::Display for NalgangError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            NalgangError::UnhandledDatabaseError(e) => format!("UnhandledDatabaseError: {}", e),
+            NalgangError::UnhandledDatabaseError{error, file, line} => 
+                format!("UnhandledDatabaseError: {} at {}{}", error, file, line),
             NalgangError::NotImplemented => "NotImplemented".to_string(),
             NalgangError::MemberNotExist => "MemberNotExist".to_string(),
             NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
@@ -112,7 +113,7 @@ impl Handler {
             },
             Err(e) => match e {
                 sqlx::Error::RowNotFound => Ok(false),
-                _ => Err(NalgangError::UnhandledDatabaseError(e))
+                _ => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
             }
         }
     }
@@ -129,7 +130,7 @@ impl Handler {
             score, combo, hit_time, member.gid, member.uid
         ).execute(&self.database).await {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
+            Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
         }
     }
 
@@ -137,7 +138,7 @@ impl Handler {
         match sqlx::query!(
             "DELETE FROM DailyAttendance WHERE guild_id=?", gid
         ).execute(&self.database).await {
-            Err(e) => Err(NalgangError::UnhandledDatabaseError(e)),
+            Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}),
             Ok(_) => Ok(())
         }
     }
@@ -150,14 +151,14 @@ impl Handler {
             .fetch_one(&self.database).await {
             Ok(1) => return Err(NalgangError::DuplicateGuildRegister),
             Ok(0) => (),
-            Err(e) => return Err(NalgangError::UnhandledDatabaseError(e)),
+            Err(e) => return Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}),
             _ => unreachable!()
         };
         
         match sqlx::query!("INSERT INTO AttendanceTimeCount (guild_id) VALUES (?)", gid)
             .execute(&self.database).await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
+                Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
             }
     }
 
@@ -186,7 +187,7 @@ impl Handler {
         )
         .execute(&self.database).await {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
+            Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
         }
     }
 
@@ -210,7 +211,7 @@ impl Handler {
                 AttendanceTimeCount WHERE guild_id=? LIMIT 1",
             gid)
             .fetch_one(&self.database)
-            .await.or_else(|e| Err(NalgangError::UnhandledDatabaseError(e)))?;
+            .await.or_else(|e| Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
         let guild_hit_count = guild_entry.hit_count;
         let guild_hit_time = guild_entry.hit_time;
         // KST (6:00=30:00) is UTC 21:00.
@@ -237,7 +238,7 @@ impl Handler {
         )
         .execute(&self.database)
         .await
-        .or_else(|e| return Err(NalgangError::UnhandledDatabaseError(e)))?;
+        .or_else(|e| return Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
         
         let combo = if current_time >= combo_boundary_time { 1 } else { member.combo.unwrap() + 1 };
         let earned_point = earned_attendance_point(rank, combo);
@@ -250,16 +251,16 @@ impl Handler {
         let _ = sqlx::query!(
             "INSERT INTO DailyAttendance (guild_id, user_id, hit_message, hit_time) VALUES (?, ?, ?, ?)",
             gid, uid, message, current_time
-        ).execute(&self.database).await.or_else(|e| Err(
-            NalgangError::UnhandledDatabaseError(e)))?;
+        ).execute(&self.database).await.or_else(
+            |e| Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
 
         // Insert AttendanceHistory
         let _ = sqlx::query!(
             "INSERT INTO AttendanceHistory (guild_id, user_id, hit_message, hit_time, hit_score, hit_combo, hit_rank)
                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             gid, uid, message, current_time, new_score, combo, rank
-        ).execute(&self.database).await.or_else(|e| Err(
-            NalgangError::UnhandledDatabaseError(e)))?;
+        ).execute(&self.database).await.or_else(
+            |e| Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
 
         // TODO: Retrieve today's attendance board
         Ok(earned_point)
