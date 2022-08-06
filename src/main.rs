@@ -1,4 +1,4 @@
-use std::{env, fmt, borrow::Cow};
+use std::{borrow::Cow, env, fmt};
 
 use serenity::{
     async_trait,
@@ -11,9 +11,10 @@ use serenity::{
         id::UserId,
         prelude::command::CommandOptionType,
         prelude::interaction::{
-            application_command::{CommandDataOptionValue, ApplicationCommandInteraction}, Interaction, InteractionResponseType,
+            application_command::{ApplicationCommandInteraction, CommandDataOptionValue},
+            Interaction, InteractionResponseType,
         },
-        timestamp::Timestamp
+        timestamp::Timestamp,
     },
     Client,
 };
@@ -28,17 +29,29 @@ struct NalgangMember {
     pub gid: i64,
     pub score: Option<i64>,
     pub combo: Option<i64>,
-    pub hit_time: Option<i64>
+    pub hit_time: Option<i64>,
 }
 
 // Wrapper for Serenity guild member
 impl NalgangMember {
     pub fn new(member: &Member) -> Self {
-        NalgangMember {uid: member.user.id.0 as i64, gid: member.guild_id.0 as i64, score: None, combo: None, hit_time: None}
+        NalgangMember {
+            uid: member.user.id.0 as i64,
+            gid: member.guild_id.0 as i64,
+            score: None,
+            combo: None,
+            hit_time: None,
+        }
     }
 
     pub fn new_explict(user_id: UserId, guild_id: GuildId) -> Self {
-        NalgangMember {uid: user_id.0 as i64, gid: guild_id.0 as i64, score: None, combo: None, hit_time: None}
+        NalgangMember {
+            uid: user_id.0 as i64,
+            gid: guild_id.0 as i64,
+            score: None,
+            combo: None,
+            hit_time: None,
+        }
     }
 
     pub fn update_data(&mut self, score: i64, combo: i64, hit_time: i64) {
@@ -53,20 +66,25 @@ enum NalgangError {
     DuplicateMemberRegister,
     DuplicateGuildRegister,
     MemberNotExist,
-    UnhandledDatabaseError{error: sqlx::Error, file: &'static str, line: u32},
-    NotImplemented
+    UnhandledDatabaseError {
+        error: sqlx::Error,
+        file: &'static str,
+        line: u32,
+    },
+    NotImplemented,
 }
 
 impl fmt::Display for NalgangError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            NalgangError::UnhandledDatabaseError{error, file, line} => 
-                format!("UnhandledDatabaseError: {} at {}{}", error, file, line),
+            NalgangError::UnhandledDatabaseError { error, file, line } => {
+                format!("UnhandledDatabaseError: {} at {}{}", error, file, line)
+            }
             NalgangError::NotImplemented => "NotImplemented".to_string(),
             NalgangError::MemberNotExist => "MemberNotExist".to_string(),
             NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
             NalgangError::DuplicateGuildRegister => "DuplicateGuildRegister".to_string(),
-            NalgangError::DuplicateAttendance => "DuplicateAttendance".to_string()
+            NalgangError::DuplicateAttendance => "DuplicateAttendance".to_string(),
         };
         write!(f, "{}", s)
     }
@@ -82,7 +100,7 @@ fn earned_attendance_point(rank: i64, combo: i64) -> i64 {
         0 => 10,
         1 => 5,
         2 => 3,
-        _ => 1
+        _ => 1,
     };
 
     if combo % 7 == 0 {
@@ -97,97 +115,132 @@ fn earned_attendance_point(rank: i64, combo: i64) -> i64 {
     earned_point
 }
 
-
 impl Handler {
-    async fn get_member_info(
-        &self,
-        member: &mut NalgangMember
-    ) -> Result<bool, NalgangError> {
+    async fn get_member_info(&self, member: &mut NalgangMember) -> Result<bool, NalgangError> {
         let row = sqlx::query!(
-            "SELECT score, combo, hit_time FROM Member WHERE user_id=? AND guild_id=? LIMIT 1", member.uid, member.gid
-        ).fetch_one(&self.database).await;
-        
+            "SELECT score, combo, hit_time FROM Member WHERE user_id=? AND guild_id=? LIMIT 1",
+            member.uid,
+            member.gid
+        )
+        .fetch_one(&self.database)
+        .await;
+
         match row {
             Ok(record) => {
-                member.update_data(record.score, record.combo, record.hit_time); Ok(true)
-            },
+                member.update_data(record.score, record.combo, record.hit_time);
+                Ok(true)
+            }
             Err(e) => match e {
                 sqlx::Error::RowNotFound => Ok(false),
-                _ => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
-            }
+                _ => Err(NalgangError::UnhandledDatabaseError {
+                    error: e,
+                    file: file!(),
+                    line: line!(),
+                }),
+            },
         }
     }
 
-    async fn update_member_info(
-        &self,
-        member: &NalgangMember
-    ) -> Result<(), NalgangError> {
+    async fn update_member_info(&self, member: &NalgangMember) -> Result<(), NalgangError> {
         let (score, combo, hit_time) = (
-            member.score.unwrap(), member.combo.unwrap(), member.hit_time.unwrap()
+            member.score.unwrap(),
+            member.combo.unwrap(),
+            member.hit_time.unwrap(),
         );
         match sqlx::query!(
             "UPDATE Member SET score=?, combo=?, hit_time=? WHERE guild_id=? AND user_id=?",
-            score, combo, hit_time, member.gid, member.uid
-        ).execute(&self.database).await {
+            score,
+            combo,
+            hit_time,
+            member.gid,
+            member.uid
+        )
+        .execute(&self.database)
+        .await
+        {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
+            Err(e) => Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            }),
         }
     }
 
     async fn daily_attendance_clear(&self, gid: i64) -> Result<(), NalgangError> {
-        match sqlx::query!(
-            "DELETE FROM DailyAttendance WHERE guild_id=?", gid
-        ).execute(&self.database).await {
-            Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}),
-            Ok(_) => Ok(())
+        match sqlx::query!("DELETE FROM DailyAttendance WHERE guild_id=?", gid)
+            .execute(&self.database)
+            .await
+        {
+            Err(e) => Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            }),
+            Ok(_) => Ok(()),
         }
     }
 
-    async fn register_guild(
-        &self,
-        gid: i64
-    ) -> Result<(), NalgangError> {
-        match sqlx::query_scalar!("SELECT EXISTS (SELECT (1) FROM AttendanceTimeCount WHERE guild_id=? LIMIT 1)", gid)
-            .fetch_one(&self.database).await {
+    async fn register_guild(&self, gid: i64) -> Result<(), NalgangError> {
+        match sqlx::query_scalar!(
+            "SELECT EXISTS (SELECT (1) FROM AttendanceTimeCount WHERE guild_id=? LIMIT 1)",
+            gid
+        )
+        .fetch_one(&self.database)
+        .await
+        {
             Ok(1) => return Err(NalgangError::DuplicateGuildRegister),
             Ok(0) => (),
-            Err(e) => return Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}),
-            _ => unreachable!()
-        };
-        
-        match sqlx::query!("INSERT INTO AttendanceTimeCount (guild_id) VALUES (?)", gid)
-            .execute(&self.database).await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
+            Err(e) => {
+                return Err(NalgangError::UnhandledDatabaseError {
+                    error: e,
+                    file: file!(),
+                    line: line!(),
+                })
             }
-    }
+            _ => unreachable!(),
+        };
 
-    async fn command_point(
-        &self,
-        member: &mut NalgangMember
-    ) -> Result<(), NalgangError> {
-        match self.get_member_info(member).await? {
-            true => Ok(()),
-            false => Err(NalgangError::MemberNotExist)
+        match sqlx::query!("INSERT INTO AttendanceTimeCount (guild_id) VALUES (?)", gid)
+            .execute(&self.database)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) => Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            }),
         }
     }
 
-    async fn command_register(
-        &self,
-        member: &mut NalgangMember
-    ) -> Result<(), NalgangError> {
+    async fn command_point(&self, member: &mut NalgangMember) -> Result<(), NalgangError> {
+        match self.get_member_info(member).await? {
+            true => Ok(()),
+            false => Err(NalgangError::MemberNotExist),
+        }
+    }
 
+    async fn command_register(&self, member: &mut NalgangMember) -> Result<(), NalgangError> {
         if self.get_member_info(member).await? {
-            return Err(NalgangError::DuplicateMemberRegister)
+            return Err(NalgangError::DuplicateMemberRegister);
         }
 
         let (uid, gid) = (member.uid, member.gid);
         match sqlx::query!(
-            "INSERT INTO Member (user_id, guild_id) VALUES (?, ?)", uid, gid
+            "INSERT INTO Member (user_id, guild_id) VALUES (?, ?)",
+            uid,
+            gid
         )
-        .execute(&self.database).await {
+        .execute(&self.database)
+        .await
+        {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()})
+            Err(e) => Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            }),
         }
     }
 
@@ -197,9 +250,8 @@ impl Handler {
         time: Timestamp,
         message: String,
     ) -> Result<i64, NalgangError> {
-
         if !self.get_member_info(member).await? {
-            return Err(NalgangError::MemberNotExist)
+            return Err(NalgangError::MemberNotExist);
         }
 
         let (gid, uid, member_hit_time) = (member.gid, member.uid, member.hit_time.unwrap());
@@ -209,9 +261,17 @@ impl Handler {
         let guild_entry = sqlx::query!(
             "SELECT hit_count, hit_time FROM 
                 AttendanceTimeCount WHERE guild_id=? LIMIT 1",
-            gid)
-            .fetch_one(&self.database)
-            .await.or_else(|e| Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
+            gid
+        )
+        .fetch_one(&self.database)
+        .await
+        .or_else(|e| {
+            Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            })
+        })?;
         let guild_hit_count = guild_entry.hit_count;
         let guild_hit_time = guild_entry.hit_time;
         // KST (6:00=30:00) is UTC 21:00.
@@ -219,7 +279,7 @@ impl Handler {
         let combo_boundary_time = timestamp_round_up(member_hit_time, 3600 * 21) + 3600 * 24;
 
         let rank = if current_time >= rank_boundary_time {
-            self.daily_attendance_clear(gid).await?;                   // TODO: Schedule the delete query.
+            self.daily_attendance_clear(gid).await?; // TODO: Schedule the delete query.
             0
         } else {
             // Raise error if user tries to do duplicate hit.
@@ -238,9 +298,19 @@ impl Handler {
         )
         .execute(&self.database)
         .await
-        .or_else(|e| return Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
-        
-        let combo = if current_time >= combo_boundary_time { 1 } else { member.combo.unwrap() + 1 };
+        .or_else(|e| {
+            return Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            });
+        })?;
+
+        let combo = if current_time >= combo_boundary_time {
+            1
+        } else {
+            member.combo.unwrap() + 1
+        };
         let earned_point = earned_attendance_point(rank, combo);
         let new_score = member.score.unwrap() + earned_point;
         // Update Member
@@ -266,7 +336,12 @@ impl Handler {
         Ok(earned_point)
     }
 
-    async fn simple_response(&self, ctx: &Context, command: &ApplicationCommandInteraction, message: Result<String, NalgangError>) {
+    async fn simple_response(
+        &self,
+        ctx: &Context,
+        command: &ApplicationCommandInteraction,
+        message: Result<String, NalgangError>,
+    ) {
         let content = match message {
             Ok(s) => s,
             Err(e) => {
@@ -278,14 +353,14 @@ impl Handler {
         if let Err(why) = command
             .create_interaction_response(&ctx.http, |response| {
                 response
-                .kind(InteractionResponseType::ChannelMessageWithSource)
-                .interaction_response_data(|message| message.content(content))
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(content))
             })
-            .await {
+            .await
+        {
             println!("Cannot respond to slash command: {}", why);
         }
     }
-
 }
 
 #[async_trait]
@@ -305,28 +380,33 @@ impl EventHandler for Handler {
         if let Interaction::ApplicationCommand(command) = interaction {
             let member = command.member.as_ref().expect("Expected guild member");
             let mut nalgang_member = NalgangMember::new(member);
-            let command_result = match command.data.name.as_str() {
+            match command.data.name.as_str() {
                 "서버등록" => {
                     let res = self.register_guild(nalgang_member.gid).await;
                     let content = match res {
                         Ok(()) => Ok("서버를 등록했습니다.".to_string()),
                         Err(e) => match e {
-                            NalgangError::DuplicateGuildRegister => Ok("이미 등록된 서버입니다.".to_string()),
-                            _ => Err(e)
-                        }
+                            NalgangError::DuplicateGuildRegister => {
+                                Ok("이미 등록된 서버입니다.".to_string())
+                            }
+                            _ => Err(e),
+                        },
                     };
-                    self.simple_response(&ctx, &command, content);
+                    self.simple_response(&ctx, &command, content).await;
                 }
                 "등록" | "register" => {
                     let res = self.command_register(&mut nalgang_member).await;
                     let content = match res {
                         Ok(()) => Ok("계정을 등록했습니다.".to_string()),
                         Err(e) => match e {
-                            NalgangError::DuplicateMemberRegister => Ok(format!("{}님은 이미 등록되었습니다.", member.display_name())),
-                            _ => Err(e)
-                        }
+                            NalgangError::DuplicateMemberRegister => Ok(format!(
+                                "{}님은 이미 등록되었습니다.",
+                                member.display_name()
+                            )),
+                            _ => Err(e),
+                        },
                     };
-                    self.simple_response(&ctx, &command, content);
+                    self.simple_response(&ctx, &command, content).await;
                 }
 
                 "날갱" | "nalgang" => {
@@ -334,73 +414,77 @@ impl EventHandler for Handler {
 
                     let message = match command.data.options.get(0) {
                         None => String::new(),
-                        Some(v) => {
-                            match v.resolved.as_ref().unwrap() {
-                                CommandDataOptionValue::String(s) => s.clone(),
-                                _ => unreachable!()
-                            }
-                        } 
+                        Some(v) => match v.resolved.as_ref().unwrap() {
+                            CommandDataOptionValue::String(s) => s.clone(),
+                            _ => unreachable!(),
+                        },
                     };
 
                     let result = self
-                        .command_nalgang(
-                            &mut nalgang_member,
-                            interaction_time,
-                            message
-                        )
+                        .command_nalgang(&mut nalgang_member, interaction_time, message)
                         .await;
                     let content = match result {
                         Ok(earned_point) => Ok(format!(
-                            "{}님이 날갱해서 {}점을 얻었습니다!", member.display_name(), earned_point)),
+                            "{}님이 날갱해서 {}점을 얻었습니다!",
+                            member.display_name(),
+                            earned_point
+                        )),
                         Err(e) => match e {
-                            NalgangError::DuplicateAttendance => Ok(format!("{}님은 이미 날갱했습니다.", member.display_name())),
-                            NalgangError::MemberNotExist => Ok("등록되지 않은 계정입니다.".to_string()),
-                            _ => Err(e)
-                        }
+                            NalgangError::DuplicateAttendance => {
+                                Ok(format!("{}님은 이미 날갱했습니다.", member.display_name()))
+                            }
+                            NalgangError::MemberNotExist => {
+                                Ok("등록되지 않은 계정입니다.".to_string())
+                            }
+                            _ => Err(e),
+                        },
                     };
-                    self.simple_response(&ctx, &command, content);
+                    self.simple_response(&ctx, &command, content).await;
                 }
                 "점수" => {
                     let (mut target_member, name) = match command.data.options.get(0) {
                         None => (nalgang_member, member.display_name()),
-                        Some(value) => {
-                            match value.resolved.as_ref().unwrap() {
-                                CommandDataOptionValue::User(user, pm) => {
-                                    let display_name = match pm {
-                                        Some(inner) => {
-                                            match inner.nick.as_ref() {
-                                                Some(s) => Cow::Borrowed(s),
-                                                None => Cow::Owned(user.name.clone())
-                                            }
-                                        }
-                                        None => Cow::Owned(user.name.clone())
-                                    };
+                        Some(value) => match value.resolved.as_ref().unwrap() {
+                            CommandDataOptionValue::User(user, pm) => {
+                                let display_name = match pm {
+                                    Some(inner) => match inner.nick.as_ref() {
+                                        Some(s) => Cow::Borrowed(s),
+                                        None => Cow::Owned(user.name.clone()),
+                                    },
+                                    None => Cow::Owned(user.name.clone()),
+                                };
 
-                                    (NalgangMember::new_explict(user.id, member.guild_id), display_name)
-                                },
-                                _ => unreachable!()
+                                (
+                                    NalgangMember::new_explict(user.id, member.guild_id),
+                                    display_name,
+                                )
                             }
-                        }
+                            _ => unreachable!(),
+                        },
                     };
 
                     let content = match self.command_point(&mut target_member).await {
                         Ok(()) => Ok(format!(
-                            "{}님의 점수는 {}점입니다. {}연속 출석중입니다.", name, target_member.score.unwrap(), target_member.combo.unwrap()
+                            "{}님의 점수는 {}점입니다. {}연속 출석중입니다.",
+                            name,
+                            target_member.score.unwrap(),
+                            target_member.combo.unwrap()
                         )),
                         Err(e) => match e {
-                            NalgangError::MemberNotExist => Ok("등록되지 않은 계정입니다.".to_string()),
-                            _ => Err(e)
-                        }
+                            NalgangError::MemberNotExist => {
+                                Ok("등록되지 않은 계정입니다.".to_string())
+                            }
+                            _ => Err(e),
+                        },
                     };
-                    self.simple_response(&ctx, &command, content);
-
+                    self.simple_response(&ctx, &command, content).await;
                 } // TODO: 데이터베이스와 상호작용하기
                 /*
                 "보내기" => "보내기".to_string(), // TODO
                 "순위표" | "점수표" | "순위" => "순위 출력하기".to_string(),
                 "점수추가" => "점수를 추가하기".to_string(), //TODO
                 */
-                _ => unreachable!()
+                _ => unreachable!(),
             };
         }
     }
@@ -419,18 +503,20 @@ impl EventHandler for Handler {
             commands
                 .create_application_command(|command| {
                     command
-                    .name("날갱")
-                    .description("날갱합니다.")
-                    .create_option(|option| {
-                        option
-                            .name("인사말")
-                            .description("아무말이나 입력하세요.")
-                            .kind(CommandOptionType::String)
-                            .required(false)
-                    })
+                        .name("날갱")
+                        .description("날갱합니다.")
+                        .create_option(|option| {
+                            option
+                                .name("인사말")
+                                .description("아무말이나 입력하세요.")
+                                .kind(CommandOptionType::String)
+                                .required(false)
+                        })
                 })
                 .create_application_command(|command| {
-                    command.name("등록").description("날갱 시스템에 등록합니다.")
+                    command
+                        .name("등록")
+                        .description("날갱 시스템에 등록합니다.")
                 })
                 .create_application_command(|command| {
                     command
@@ -445,7 +531,9 @@ impl EventHandler for Handler {
                         })
                 })
                 .create_application_command(|command| {
-                    command.name("서버등록").description("서버를 날갱 시스템에 등록합니다.")
+                    command
+                        .name("서버등록")
+                        .description("서버를 날갱 시스템에 등록합니다.")
                 })
         })
         .await;
@@ -457,7 +545,7 @@ impl EventHandler for Handler {
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().expect("Failed to read .env file");
-    
+
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
     let database = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(5)
@@ -487,7 +575,7 @@ async fn main() {
         .application_id(application_id)
         .await
         .expect("Error creating client");
-    
+
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
