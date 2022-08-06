@@ -22,9 +22,10 @@ struct Handler {
     database: sqlx::SqlitePool,
 }
 
+// Struct for database interaction
 struct NalgangMember {
-    pub user_id: UserId,
-    pub guild_id: GuildId,
+    pub uid: i64,
+    pub gid: i64,
     pub score: Option<i64>,
     pub combo: Option<i64>,
     pub hit_time: Option<i64>
@@ -33,19 +34,11 @@ struct NalgangMember {
 // Wrapper for Serenity guild member
 impl NalgangMember {
     pub fn new(member: &Member) -> Self {
-        NalgangMember {user_id: member.user.id, guild_id: member.guild_id, score: None, combo: None, hit_time: None}
+        NalgangMember {uid: member.user.id.0 as i64, gid: member.guild_id.0 as i64, score: None, combo: None, hit_time: None}
     }
 
     pub fn new_explict(user_id: UserId, guild_id: GuildId) -> Self {
-        NalgangMember {user_id, guild_id, score: None, combo: None, hit_time: None}
-    }
-
-    pub fn get_uid(&self) -> i64 {
-        self.user_id.0 as i64
-    }
-
-    pub fn get_gid(&self) -> i64 {
-        self.guild_id.0 as i64
+        NalgangMember {uid: user_id.0 as i64, gid: guild_id.0 as i64, score: None, combo: None, hit_time: None}
     }
 
     pub fn update_data(&mut self, score: i64, combo: i64, hit_time: i64) {
@@ -60,15 +53,14 @@ enum NalgangError {
     DuplicateMemberRegister,
     DuplicateGuildRegister,
     MemberNotExist,
-    // Errors that are not expected.
-    UnhandledDatabaseError(String, sqlx::Error),
+    UnhandledDatabaseError(sqlx::Error),
     NotImplemented
 }
 
 impl fmt::Display for NalgangError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            NalgangError::UnhandledDatabaseError(s, e) => format!("UnhandledDatabaseError: {}\n Query: {}", e, s),
+            NalgangError::UnhandledDatabaseError(e) => format!("UnhandledDatabaseError: {}", e),
             NalgangError::NotImplemented => "NotImplemented".to_string(),
             NalgangError::MemberNotExist => "MemberNotExist".to_string(),
             NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
@@ -110,10 +102,8 @@ impl Handler {
         &self,
         member: &mut NalgangMember
     ) -> Result<bool, NalgangError> {
-        let uid = member.get_uid();
-        let gid = member.get_gid();
         let row = sqlx::query!(
-            "SELECT score, combo, hit_time FROM Member WHERE user_id=? AND guild_id=? LIMIT 1", uid, gid
+            "SELECT score, combo, hit_time FROM Member WHERE user_id=? AND guild_id=? LIMIT 1", member.uid, member.gid
         ).fetch_one(&self.database).await;
         
         match row {
@@ -122,7 +112,7 @@ impl Handler {
             },
             Err(e) => match e {
                 sqlx::Error::RowNotFound => Ok(false),
-                _ => Err(NalgangError::UnhandledDatabaseError(format!("SELECT Member"), e))
+                _ => Err(NalgangError::UnhandledDatabaseError(e))
             }
         }
     }
@@ -131,15 +121,15 @@ impl Handler {
         &self,
         member: &NalgangMember
     ) -> Result<(), NalgangError> {
-        let (score, combo, hit_time, uid, gid) = (
-            member.score.unwrap(), member.combo.unwrap(), member.hit_time.unwrap(), member.get_uid(), member.get_gid()
+        let (score, combo, hit_time) = (
+            member.score.unwrap(), member.combo.unwrap(), member.hit_time.unwrap()
         );
         match sqlx::query!(
             "UPDATE Member SET score=?, combo=?, hit_time=? WHERE guild_id=? AND user_id=?",
-            score, combo, hit_time, gid, uid
+            score, combo, hit_time, member.gid, member.uid
         ).execute(&self.database).await {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError(format!("Update Member"), e))
+            Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
         }
     }
 
@@ -147,7 +137,7 @@ impl Handler {
         match sqlx::query!(
             "DELETE FROM DailyAttendance WHERE guild_id=?", gid
         ).execute(&self.database).await {
-            Err(e) => Err(NalgangError::UnhandledDatabaseError(format!("DELETE DailyAttendance"), e)),
+            Err(e) => Err(NalgangError::UnhandledDatabaseError(e)),
             Ok(_) => Ok(())
         }
     }
@@ -160,14 +150,14 @@ impl Handler {
             .fetch_one(&self.database).await {
             Ok(1) => return Err(NalgangError::DuplicateGuildRegister),
             Ok(0) => (),
-            Err(e) => return Err(NalgangError::UnhandledDatabaseError("SELECT EXISTS".to_string(), e)),
+            Err(e) => return Err(NalgangError::UnhandledDatabaseError(e)),
             _ => unreachable!()
         };
         
         match sqlx::query!("INSERT INTO AttendanceTimeCount (guild_id) VALUES (?)", gid)
             .execute(&self.database).await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(NalgangError::UnhandledDatabaseError("INSERT INTO AttendanceTimeCount".to_string(), e))
+                Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
             }
     }
 
@@ -190,13 +180,13 @@ impl Handler {
             return Err(NalgangError::DuplicateMemberRegister)
         }
 
-        let (uid, gid) = (member.get_uid(), member.get_gid());
+        let (uid, gid) = (member.uid, member.gid);
         match sqlx::query!(
             "INSERT INTO Member (user_id, guild_id) VALUES (?, ?)", uid, gid
         )
         .execute(&self.database).await {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError(format!("INSERT Member"), e))
+            Err(e) => Err(NalgangError::UnhandledDatabaseError(e))
         }
     }
 
@@ -211,7 +201,7 @@ impl Handler {
             return Err(NalgangError::MemberNotExist)
         }
 
-        let (gid, uid, member_hit_time) = (member.get_gid(), member.get_uid(), member.hit_time.unwrap());
+        let (gid, uid, member_hit_time) = (member.gid, member.uid, member.hit_time.unwrap());
         let current_time = time.unix_timestamp();
 
         // Get last hit_count, hit_timestamp from AttendanceTimeCount by guild_id
@@ -220,7 +210,7 @@ impl Handler {
                 AttendanceTimeCount WHERE guild_id=? LIMIT 1",
             gid)
             .fetch_one(&self.database)
-            .await.or_else(|e| Err(NalgangError::UnhandledDatabaseError(format!("SELECT AttendanceTimeCount"), e)))?;
+            .await.or_else(|e| Err(NalgangError::UnhandledDatabaseError(e)))?;
         let guild_hit_count = guild_entry.hit_count;
         let guild_hit_time = guild_entry.hit_time;
         // KST (6:00=30:00) is UTC 21:00.
@@ -247,7 +237,7 @@ impl Handler {
         )
         .execute(&self.database)
         .await
-        .or_else(|e| return Err(NalgangError::UnhandledDatabaseError(format!("UPDATE AttendanceTimeCount"), e)))?;
+        .or_else(|e| return Err(NalgangError::UnhandledDatabaseError(e)))?;
         
         let combo = if current_time >= combo_boundary_time { 1 } else { member.combo.unwrap() + 1 };
         let earned_point = earned_attendance_point(rank, combo);
@@ -261,7 +251,7 @@ impl Handler {
             "INSERT INTO DailyAttendance (guild_id, user_id, hit_message, hit_time) VALUES (?, ?, ?, ?)",
             gid, uid, message, current_time
         ).execute(&self.database).await.or_else(|e| Err(
-            NalgangError::UnhandledDatabaseError(format!("INSERT DailyAttendance"), e)))?;
+            NalgangError::UnhandledDatabaseError(e)))?;
 
         // Insert AttendanceHistory
         let _ = sqlx::query!(
@@ -269,7 +259,7 @@ impl Handler {
                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             gid, uid, message, current_time, new_score, combo, rank
         ).execute(&self.database).await.or_else(|e| Err(
-            NalgangError::UnhandledDatabaseError(format!("INSERT AttendanceHistory"), e)))?;
+            NalgangError::UnhandledDatabaseError(e)))?;
 
         // TODO: Retrieve today's attendance board
         Ok(earned_point)
@@ -295,7 +285,7 @@ impl EventHandler for Handler {
             let mut nalgang_member = NalgangMember::new(member);
             let command_result = match command.data.name.as_str() {
                 "서버등록" => {
-                    let res = self.register_guild(nalgang_member.get_gid()).await;
+                    let res = self.register_guild(nalgang_member.gid).await;
                     match res {
                         Ok(()) => Ok("서버를 등록했습니다.".to_string()),
                         Err(e) => match e {
