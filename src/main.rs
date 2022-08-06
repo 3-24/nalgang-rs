@@ -11,7 +11,7 @@ use serenity::{
         id::UserId,
         prelude::command::CommandOptionType,
         prelude::interaction::{
-            application_command::CommandDataOptionValue, Interaction, InteractionResponseType,
+            application_command::{CommandDataOptionValue, ApplicationCommandInteraction}, Interaction, InteractionResponseType,
         },
         timestamp::Timestamp
     },
@@ -265,6 +265,27 @@ impl Handler {
         // TODO: Retrieve today's attendance board
         Ok(earned_point)
     }
+
+    async fn simple_response(&self, ctx: &Context, command: &ApplicationCommandInteraction, message: Result<String, NalgangError>) {
+        let content = match message {
+            Ok(s) => s,
+            Err(e) => {
+                println!("{}", e);
+                "오류가 발생했습니다.".to_string()
+            }
+        };
+
+        if let Err(why) = command
+            .create_interaction_response(&ctx.http, |response| {
+                response
+                .kind(InteractionResponseType::ChannelMessageWithSource)
+                .interaction_response_data(|message| message.content(content))
+            })
+            .await {
+            println!("Cannot respond to slash command: {}", why);
+        }
+    }
+
 }
 
 #[async_trait]
@@ -287,35 +308,48 @@ impl EventHandler for Handler {
             let command_result = match command.data.name.as_str() {
                 "서버등록" => {
                     let res = self.register_guild(nalgang_member.gid).await;
-                    match res {
+                    let content = match res {
                         Ok(()) => Ok("서버를 등록했습니다.".to_string()),
                         Err(e) => match e {
                             NalgangError::DuplicateGuildRegister => Ok("이미 등록된 서버입니다.".to_string()),
                             _ => Err(e)
                         }
-                    }
+                    };
+                    self.simple_response(&ctx, &command, content);
                 }
                 "등록" | "register" => {
                     let res = self.command_register(&mut nalgang_member).await;
-                    match res {
+                    let content = match res {
                         Ok(()) => Ok("계정을 등록했습니다.".to_string()),
                         Err(e) => match e {
                             NalgangError::DuplicateMemberRegister => Ok(format!("{}님은 이미 등록되었습니다.", member.display_name())),
                             _ => Err(e)
                         }
-                    }
+                    };
+                    self.simple_response(&ctx, &command, content);
                 }
 
                 "날갱" | "nalgang" => {
                     let interaction_time = command.id.created_at();
+
+                    let message = match command.data.options.get(0) {
+                        None => String::new(),
+                        Some(v) => {
+                            match v.resolved.as_ref().unwrap() {
+                                CommandDataOptionValue::String(s) => s.clone(),
+                                _ => unreachable!()
+                            }
+                        } 
+                    };
+
                     let result = self
                         .command_nalgang(
                             &mut nalgang_member,
                             interaction_time,
-                            "Test".to_string(),             // TODO: Fix nalgang message
+                            message
                         )
                         .await;
-                    match result {
+                    let content = match result {
                         Ok(earned_point) => Ok(format!(
                             "{}님이 날갱해서 {}점을 얻었습니다!", member.display_name(), earned_point)),
                         Err(e) => match e {
@@ -323,7 +357,8 @@ impl EventHandler for Handler {
                             NalgangError::MemberNotExist => Ok("등록되지 않은 계정입니다.".to_string()),
                             _ => Err(e)
                         }
-                    }
+                    };
+                    self.simple_response(&ctx, &command, content);
                 }
                 "점수" => {
                     let (mut target_member, name) = match command.data.options.get(0) {
@@ -348,7 +383,7 @@ impl EventHandler for Handler {
                         }
                     };
 
-                    match self.command_point(&mut target_member).await {
+                    let content = match self.command_point(&mut target_member).await {
                         Ok(()) => Ok(format!(
                             "{}님의 점수는 {}점입니다. {}연속 출석중입니다.", name, target_member.score.unwrap(), target_member.combo.unwrap()
                         )),
@@ -356,7 +391,8 @@ impl EventHandler for Handler {
                             NalgangError::MemberNotExist => Ok("등록되지 않은 계정입니다.".to_string()),
                             _ => Err(e)
                         }
-                    }
+                    };
+                    self.simple_response(&ctx, &command, content);
 
                 } // TODO: 데이터베이스와 상호작용하기
                 /*
@@ -364,27 +400,8 @@ impl EventHandler for Handler {
                 "순위표" | "점수표" | "순위" => "순위 출력하기".to_string(),
                 "점수추가" => "점수를 추가하기".to_string(), //TODO
                 */
-                _ => Err(NalgangError::NotImplemented)
+                _ => unreachable!()
             };
-
-            let content = match command_result {
-                Ok(s) => s,
-                Err(e) => {
-                    println!("{}", e);
-                    "오류가 발생했습니다.".to_string()
-                }
-            };
-
-            if let Err(why) = command
-                .create_interaction_response(&ctx.http, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| message.content(content))
-                })
-                .await
-            {
-                println!("Cannot respond to slash command: {}", why);
-            }
         }
     }
 
@@ -401,7 +418,16 @@ impl EventHandler for Handler {
         let _commands = GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
             commands
                 .create_application_command(|command| {
-                    command.name("날갱").description("날갱합니다.")
+                    command
+                    .name("날갱")
+                    .description("날갱합니다.")
+                    .create_option(|option| {
+                        option
+                            .name("인사말")
+                            .description("아무말이나 입력하세요.")
+                            .kind(CommandOptionType::String)
+                            .required(false)
+                    })
                 })
                 .create_application_command(|command| {
                     command.name("등록").description("날갱 시스템에 등록합니다.")
@@ -413,7 +439,7 @@ impl EventHandler for Handler {
                         .create_option(|option| {
                             option
                                 .name("이름")
-                                .description("점수를 확인할 사용자")
+                                .description("점수를 확인하고 싶은 계정을 입력해주세요.")
                                 .kind(CommandOptionType::User)
                                 .required(false)
                         })
@@ -423,6 +449,8 @@ impl EventHandler for Handler {
                 })
         })
         .await;
+
+        // println!("{:?}", _commands.unwrap());
     }
 }
 
