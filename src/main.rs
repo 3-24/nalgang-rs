@@ -404,6 +404,36 @@ impl Handler {
             }),
         }
     }
+
+    async fn ranking_collect(
+        &self,
+        context: &Context,
+        gid: i64
+    ) -> Result<String, NalgangError> {
+        let record = sqlx::query!(
+            "SELECT user_id, score FROM Member WHERE guild_id=? ORDER BY score DESC",
+            gid,
+        ).fetch_all(&self.database).await;
+        match record {
+            Ok(rec) => {
+                let mut content = String::new();
+                let guild_id = GuildId(gid as u64);
+                for (index, row) in rec.iter().enumerate() {
+                    let user_id = UserId(row.user_id as u64);
+                    let member = guild_id.member(context, user_id).await.unwrap();
+                    let user_name = member.display_name();
+                    content.push_str(&format!("{}. {}점 {}", index+1, row.score, user_name));
+                }
+
+                Ok(content)
+            },
+            Err(e) => Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            })
+        }
+    }
 }
 
 #[async_trait]
@@ -527,7 +557,7 @@ impl EventHandler for Handler {
                             };
                             self.simple_response(&ctx, &command, content).await;
                         }
-                    };
+                    }
                 }
                 "점수" => {
                     let (mut target_member, name) = match command.data.options.get(0) {
@@ -566,7 +596,31 @@ impl EventHandler for Handler {
                         },
                     };
                     self.simple_response(&ctx, &command, content).await;
-                } // TODO: 데이터베이스와 상호작용하기
+                }
+                "랭킹" => {
+                    let ranking_result = self.ranking_collect(&ctx, nalgang_member.gid).await;
+                    match ranking_result {
+                        Ok(ranking_result) => {
+                            if let Err(why) = command.create_interaction_response(
+                                &ctx.http, |response| {
+                                    response.kind(InteractionResponseType::ChannelMessageWithSource)
+                                        .interaction_response_data(|message| message
+                                        .embed(|create_embed| create_embed
+                                            .title("랭킹")
+                                            .description(ranking_result)
+                                        )
+                                    )
+                                }
+                            ).await {
+                                println!("Cannot respond to slash command: {}", why)
+                            }
+                        },
+                        Err(e) => {
+                            println!("{}", e);
+                            self.simple_response(&ctx, &command, Err(e)).await;
+                        }
+                    }
+                }
                 /*
                 "보내기" => "보내기".to_string(), // TODO
                 "순위표" | "점수표" | "순위" => "순위 출력하기".to_string(),
@@ -622,6 +676,11 @@ impl EventHandler for Handler {
                     command
                         .name("서버등록")
                         .description("서버를 날갱 시스템에 등록합니다.")
+                })
+                .create_application_command(|command| {
+                    command
+                        .name("랭킹")
+                        .description("순위를 확인합니다.")
                 })
         })
         .await;
