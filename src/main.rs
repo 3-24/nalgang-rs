@@ -391,7 +391,7 @@ impl Handler {
                     let user_name = member.display_name();
 
                     let message = row.hit_message.clone().unwrap_or_default();
-                    content.push_str(&format!("{}. {}: {}\n", index+1, user_name, message));
+                    content.push_str(&format!("{}. {}: {}\n", index + 1, user_name, message));
                 }
                 Ok(content)
             }
@@ -403,15 +403,13 @@ impl Handler {
         }
     }
 
-    async fn ranking_collect(
-        &self,
-        context: &Context,
-        gid: i64
-    ) -> Result<String, NalgangError> {
+    async fn ranking_collect(&self, context: &Context, gid: i64) -> Result<String, NalgangError> {
         let record = sqlx::query!(
             "SELECT user_id, score FROM Member WHERE guild_id=? ORDER BY score DESC",
             gid,
-        ).fetch_all(&self.database).await;
+        )
+        .fetch_all(&self.database)
+        .await;
         match record {
             Ok(rec) => {
                 let mut content = String::new();
@@ -420,16 +418,16 @@ impl Handler {
                     let user_id = UserId(row.user_id as u64);
                     let member = guild_id.member(context, user_id).await.unwrap();
                     let user_name = member.display_name();
-                    content.push_str(&format!("{}. {}점 {}", index+1, row.score, user_name));
+                    content.push_str(&format!("{}. {}점 {}", index + 1, row.score, user_name));
                 }
 
                 Ok(content)
-            },
+            }
             Err(e) => Err(NalgangError::UnhandledDatabaseError {
                 error: e,
                 file: file!(),
                 line: line!(),
-            })
+            }),
         }
     }
 }
@@ -525,7 +523,7 @@ impl EventHandler for Handler {
                                     .create_interaction_response(&ctx.http, |response| {
                                         response
                                             .kind(InteractionResponseType::ChannelMessageWithSource)
-                                            .interaction_response_data(|message| 
+                                            .interaction_response_data(|message|
                                                 message
                                                 .content(main_message)
                                                 .embed(|create_embed| create_embed
@@ -599,20 +597,23 @@ impl EventHandler for Handler {
                     let ranking_result = self.ranking_collect(&ctx, nalgang_member.gid).await;
                     match ranking_result {
                         Ok(ranking_result) => {
-                            if let Err(why) = command.create_interaction_response(
-                                &ctx.http, |response| {
-                                    response.kind(InteractionResponseType::ChannelMessageWithSource)
-                                        .interaction_response_data(|message| message
-                                        .embed(|create_embed| create_embed
-                                            .title("랭킹")
-                                            .description(ranking_result)
-                                        )
-                                    )
-                                }
-                            ).await {
+                            if let Err(why) = command
+                                .create_interaction_response(&ctx.http, |response| {
+                                    response
+                                        .kind(InteractionResponseType::ChannelMessageWithSource)
+                                        .interaction_response_data(|message| {
+                                            message.embed(|create_embed| {
+                                                create_embed
+                                                    .title("랭킹")
+                                                    .description(ranking_result)
+                                            })
+                                        })
+                                })
+                                .await
+                            {
                                 println!("Cannot respond to slash command: {}", why)
                             }
-                        },
+                        }
                         Err(e) => {
                             println!("{}", e);
                             self.simple_response(&ctx, &command, Err(e)).await;
@@ -676,9 +677,7 @@ impl EventHandler for Handler {
                         .description("서버를 날갱 시스템에 등록합니다.")
                 })
                 .create_application_command(|command| {
-                    command
-                        .name("랭킹")
-                        .description("순위를 확인합니다.")
+                    command.name("랭킹").description("순위를 확인합니다.")
                 })
         })
         .await;
