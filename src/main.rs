@@ -72,7 +72,6 @@ enum NalgangError {
         file: &'static str,
         line: u32,
     },
-    NotImplemented,
 }
 
 impl fmt::Display for NalgangError {
@@ -81,7 +80,6 @@ impl fmt::Display for NalgangError {
             NalgangError::UnhandledDatabaseError { error, file, line } => {
                 format!("UnhandledDatabaseError: {} at {}{}", error, file, line)
             }
-            NalgangError::NotImplemented => "NotImplemented".to_string(),
             NalgangError::MemberNotExist => "MemberNotExist".to_string(),
             NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
             NalgangError::DuplicateGuildRegister => "DuplicateGuildRegister".to_string(),
