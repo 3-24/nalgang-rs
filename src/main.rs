@@ -1,5 +1,6 @@
 use std::{borrow::Cow, env, fmt};
 
+use chrono::{DateTime, FixedOffset, NaiveDateTime};
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
@@ -90,9 +91,12 @@ impl fmt::Display for NalgangError {
     }
 }
 
-fn timestamp_round_up(time: i64, offset: i64) -> i64 {
-    // One day is 86400
-    ((time - offset - 1) / 86400 + 1) * 86400 + offset
+fn timestamp_round_down(utc_time: i64) -> i64 {
+    let hour = 3600;
+    let day = hour * 24;
+    let utc_kst_offset = 9 * hour;
+    let local_offset = 6 * hour;
+    ((utc_time + utc_kst_offset - local_offset) / day) * day + local_offset - utc_kst_offset
 }
 
 fn earned_attendance_point(rank: i64, combo: i64) -> i64 {
@@ -274,9 +278,10 @@ impl Handler {
         })?;
         let guild_hit_count = guild_entry.hit_count;
         let guild_hit_time = guild_entry.hit_time;
-        // KST (6:00=30:00) is UTC 21:00.
-        let rank_boundary_time = timestamp_round_up(guild_hit_time, 3600 * 21);
-        let combo_boundary_time = timestamp_round_up(member_hit_time, 3600 * 21) + 3600 * 24;
+
+        let day = 3600 * 24;
+        let rank_boundary_time = timestamp_round_down(guild_hit_time) + day;
+        let combo_boundary_time = timestamp_round_down(member_hit_time) + 2 * day;
 
         let rank = if current_time >= rank_boundary_time {
             self.daily_attendance_clear(gid).await?; // TODO: Schedule the delete query.
@@ -361,6 +366,44 @@ impl Handler {
             println!("Cannot respond to slash command: {}", why);
         }
     }
+
+    async fn today_attendance_collect(
+        &self,
+        context: &Context,
+        guild_id: i64,
+        current_time: Timestamp,
+    ) -> Result<String, NalgangError> {
+        let boundary_time = timestamp_round_down(current_time.unix_timestamp());
+
+        let record = sqlx::query!(
+            "SELECT user_id, hit_message FROM DailyAttendance WHERE guild_id=? AND hit_time >= ?",
+            guild_id,
+            boundary_time
+        )
+        .fetch_all(&self.database)
+        .await;
+
+        match record {
+            Ok(rec) => {
+                let mut content = String::new();
+                let guild = GuildId(guild_id as u64);
+                for (index, row) in rec.iter().enumerate() {
+                    let user = UserId(row.user_id as u64);
+                    let member = guild.member(context, user).await.unwrap();
+                    let user_name = member.display_name();
+
+                    let message = row.hit_message.clone().unwrap_or_default();
+                    content.push_str(&format!("{}. {}: {}\n", index, user_name, message));
+                }
+                Ok(content)
+            }
+            Err(e) => Err(NalgangError::UnhandledDatabaseError {
+                error: e,
+                file: file!(),
+                line: line!(),
+            }),
+        }
+    }
 }
 
 #[async_trait]
@@ -423,23 +466,68 @@ impl EventHandler for Handler {
                     let result = self
                         .command_nalgang(&mut nalgang_member, interaction_time, message)
                         .await;
-                    let content = match result {
-                        Ok(earned_point) => Ok(format!(
-                            "{}님이 날갱해서 {}점을 얻었습니다!",
-                            member.display_name(),
-                            earned_point
-                        )),
-                        Err(e) => match e {
-                            NalgangError::DuplicateAttendance => {
-                                Ok(format!("{}님은 이미 날갱했습니다.", member.display_name()))
-                            }
-                            NalgangError::MemberNotExist => {
-                                Ok("등록되지 않은 계정입니다.".to_string())
-                            }
-                            _ => Err(e),
-                        },
+                    match result {
+                        Ok(earned_point) => {
+                            let main_message = format!(
+                                "{}님이 날갱해서 {}점을 얻었습니다!",
+                                member.display_name(),
+                                earned_point
+                            );
+
+                            let embed_result = self
+                                .today_attendance_collect(
+                                    &ctx,
+                                    nalgang_member.gid,
+                                    interaction_time,
+                                )
+                                .await;
+                            match embed_result {
+                                Ok(attendance_embed) => {
+                                    let tz = FixedOffset::east(9 * 3600);
+                                    let date = DateTime::<FixedOffset>::from_utc(
+                                        NaiveDateTime::from_timestamp(
+                                            interaction_time.unix_timestamp(),
+                                            0,
+                                        ),
+                                        tz,
+                                    )
+                                    .date();
+
+                                    if let Err(why) = command
+                                    .create_interaction_response(&ctx.http, |response| {
+                                        response
+                                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                                            .interaction_response_data(|message| 
+                                                message
+                                                .content(main_message)
+                                                .embed(|create_embed| create_embed
+                                                    .title("오늘의 날갱")
+                                                    .field(date.format("%Y/%m/%d") , attendance_embed, false)
+                                                ))
+                                    }).await
+                                {
+                                    println!("Cannot respond to slash command: {}", why);
+                                }
+                                }
+                                Err(e) => {
+                                    println!("{}", e);
+                                    self.simple_response(&ctx, &command, Err(e)).await;
+                                }
+                            };
+                        }
+                        Err(e) => {
+                            let content = match e {
+                                NalgangError::DuplicateAttendance => {
+                                    Ok(format!("{}님은 이미 날갱했습니다.", member.display_name()))
+                                }
+                                NalgangError::MemberNotExist => {
+                                    Ok("등록되지 않은 계정입니다.".to_string())
+                                }
+                                _ => Err(e),
+                            };
+                            self.simple_response(&ctx, &command, content).await;
+                        }
                     };
-                    self.simple_response(&ctx, &command, content).await;
                 }
                 "점수" => {
                     let (mut target_member, name) = match command.data.options.get(0) {
