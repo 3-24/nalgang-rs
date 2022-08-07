@@ -393,7 +393,7 @@ impl Handler {
                     let user_name = member.display_name();
 
                     let message = row.hit_message.clone().unwrap_or_default();
-                    content.push_str(&format!("{}. {}: {}\n", index, user_name, message));
+                    content.push_str(&format!("{}. {}: {}\n", index+1, user_name, message));
                 }
                 Ok(content)
             }
