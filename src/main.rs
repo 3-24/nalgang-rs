@@ -1,4 +1,5 @@
 use std::{borrow::Cow, env, fmt};
+use std::fmt::Write as FmtWrite;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime};
 use serenity::{
@@ -67,6 +68,7 @@ enum NalgangError {
     DuplicateMemberRegister,
     DuplicateGuildRegister,
     MemberNotExist,
+    BufferError(std::fmt::Error),
     UnhandledDatabaseError {
         error: sqlx::Error,
         file: &'static str,
@@ -84,6 +86,7 @@ impl fmt::Display for NalgangError {
             NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
             NalgangError::DuplicateGuildRegister => "DuplicateGuildRegister".to_string(),
             NalgangError::DuplicateAttendance => "DuplicateAttendance".to_string(),
+            _  => todo!()
         };
         write!(f, "{}", s)
     }
@@ -267,12 +270,10 @@ impl Handler {
         )
         .fetch_one(&self.database)
         .await
-        .or_else(|e| {
-            Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            })
+        .map_err(|e| NalgangError::UnhandledDatabaseError {
+            error: e,
+            file: file!(),
+            line: line!(),
         })?;
         let guild_hit_count = guild_entry.hit_count;
         let guild_hit_time = guild_entry.hit_time;
@@ -301,12 +302,10 @@ impl Handler {
         )
         .execute(&self.database)
         .await
-        .or_else(|e| {
-            return Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            });
+        .map_err(|e| NalgangError::UnhandledDatabaseError {
+            error: e,
+            file: file!(),
+            line: line!(),
         })?;
 
         let combo = if current_time >= combo_boundary_time {
@@ -324,16 +323,22 @@ impl Handler {
         let _ = sqlx::query!(
             "INSERT INTO DailyAttendance (guild_id, user_id, hit_message, hit_time) VALUES (?, ?, ?, ?)",
             gid, uid, message, current_time
-        ).execute(&self.database).await.or_else(
-            |e| Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
+        ).execute(&self.database).await.map_err(|e| NalgangError::UnhandledDatabaseError {
+            error: e,
+            file: file!(),
+            line: line!(),
+        })?;
 
         // Insert AttendanceHistory
         let _ = sqlx::query!(
             "INSERT INTO AttendanceHistory (guild_id, user_id, hit_message, hit_time, hit_score, hit_combo, hit_rank)
                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             gid, uid, message, current_time, new_score, combo, rank
-        ).execute(&self.database).await.or_else(
-            |e| Err(NalgangError::UnhandledDatabaseError{error: e, file: file!(), line: line!()}))?;
+        ).execute(&self.database).await.map_err(|e| NalgangError::UnhandledDatabaseError {
+            error: e,
+            file: file!(),
+            line: line!(),
+        })?;
 
         // TODO: Retrieve today's attendance board
         Ok(earned_point)
@@ -391,7 +396,7 @@ impl Handler {
                     let user_name = member.display_name();
 
                     let message = row.hit_message.clone().unwrap_or_default();
-                    content.push_str(&format!("{}. {}: {}\n", index + 1, user_name, message));
+                    writeln!(&mut content, "{}. {}: {}", index + 1, user_name, message).map_err(NalgangError::BufferError)?;
                 }
                 Ok(content)
             }
@@ -418,7 +423,7 @@ impl Handler {
                     let user_id = UserId(row.user_id as u64);
                     let member = guild_id.member(context, user_id).await.unwrap();
                     let user_name = member.display_name();
-                    content.push_str(&format!("{}. {}점 {}", index + 1, row.score, user_name));
+                    writeln!(&mut content, "{}. {}점 {}", index + 1, row.score, user_name).map_err(NalgangError::BufferError)?;
                 }
 
                 Ok(content)
