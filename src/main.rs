@@ -2,6 +2,8 @@ use std::{borrow::Cow, env, fmt};
 use std::fmt::Write as FmtWrite;
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime};
+use serenity::builder::CreateApplicationCommands;
+use serenity::model::prelude::command::Command;
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
@@ -624,13 +626,10 @@ impl EventHandler for Handler {
                             self.simple_response(&ctx, &command, Err(e)).await;
                         }
                     }
+                },
+                _ => {
+                    self.simple_response(&ctx, &command, Ok("개발 중인 기능입니다.".to_string())).await;
                 }
-                /*
-                "보내기" => "보내기".to_string(), // TODO
-                "순위표" | "점수표" | "순위" => "순위 출력하기".to_string(),
-                "점수추가" => "점수를 추가하기".to_string(), //TODO
-                */
-                _ => unreachable!(),
             };
         }
     }
@@ -638,14 +637,7 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
 
-        let guild_id = GuildId(
-            env::var("GUILD_ID")
-                .expect("Expected GUILD_ID in environment")
-                .parse()
-                .expect("GUILD_ID must be an integer"),
-        );
-
-        let _commands = GuildId::set_application_commands(&guild_id, &ctx.http, |commands| {
+        let _commands = Command::set_global_application_commands(&ctx.http, |commands: &mut CreateApplicationCommands| 
             commands
                 .create_application_command(|command| {
                     command
@@ -684,9 +676,18 @@ impl EventHandler for Handler {
                 .create_application_command(|command| {
                     command.name("랭킹").description("순위를 확인합니다.")
                 })
-        })
-        .await;
-
+                .create_application_command(|command| {
+                    command
+                        .name("보내기")
+                        .description("자신의 날갱점수를 다른 사람에게 보냅니다.")
+                        .create_option(|option| {
+                            option
+                                .name("이름")
+                                .description("점수를 보낼 계정을 입력해주세요.")
+                                .kind(CommandOptionType::User)
+                                .required(true)
+                        })
+                })).await;
         // println!("{:?}", _commands.unwrap());
     }
 }
