@@ -82,7 +82,7 @@ impl fmt::Display for NalgangError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             NalgangError::UnhandledDatabaseError { error, file, line } => {
-                format!("UnhandledDatabaseError: {} at {}{}", error, file, line)
+                format!("UnhandledDatabaseError: {} at {}:{}", error, file, line)
             }
             NalgangError::MemberNotExist => "MemberNotExist".to_string(),
             NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
