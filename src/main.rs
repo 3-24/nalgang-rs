@@ -693,7 +693,18 @@ impl EventHandler for Handler {
                                 .kind(CommandOptionType::User)
                                 .required(true)
                         })
-                })).await;
+                })
+                .create_application_command(|command| {
+                    command
+                        .name("토큰발급")
+                        .description("날갱 API를 이용할 수 있는 토큰을 발급합니다.")
+                })
+                .create_application_command(|command| {
+                    command
+                        .name("토큰삭제")
+                        .description("소유 중인 API 토큰을 삭제합니다.")
+                })
+            ).await;
         // println!("{:?}", _commands.unwrap());
     }
 }
