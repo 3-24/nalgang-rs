@@ -70,6 +70,7 @@ enum NalgangError {
     DuplicateMemberRegister,
     DuplicateGuildRegister,
     MemberNotExist,
+    GuildNotExist,
     BufferError(std::fmt::Error),
     UnhandledDatabaseError {
         error: sqlx::Error,
@@ -272,11 +273,16 @@ impl Handler {
         )
         .fetch_one(&self.database)
         .await
-        .map_err(|e| NalgangError::UnhandledDatabaseError {
-            error: e,
-            file: file!(),
-            line: line!(),
-        })?;
+        .map_err(|e| 
+            match e {
+                sqlx::Error::RowNotFound => NalgangError::GuildNotExist,
+                _ => NalgangError::UnhandledDatabaseError {
+                    error: e,
+                    file: file!(),
+                    line: line!(),
+                }
+            }
+        )?;
         let guild_hit_count = guild_entry.hit_count;
         let guild_hit_time = guild_entry.hit_time;
 
