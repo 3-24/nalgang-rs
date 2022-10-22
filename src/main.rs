@@ -1,5 +1,5 @@
-use std::{borrow::Cow, env, fmt};
 use std::fmt::Write as FmtWrite;
+use std::{borrow::Cow, env, fmt};
 
 use chrono::{DateTime, FixedOffset, NaiveDateTime};
 use serenity::builder::CreateApplicationCommands;
@@ -23,11 +23,11 @@ use serenity::{
     Client,
 };
 
+// Struct for database interaction
 struct Handler {
     database: sqlx::SqlitePool,
 }
 
-// Struct for database interaction
 struct NalgangMember {
     pub uid: i64,
     pub gid: i64,
@@ -65,33 +65,44 @@ impl NalgangMember {
     }
 }
 
-enum NalgangError {
+macro_rules! nalgang_error {
+    ($error: expr) => {
+        NalgangError {
+            kind: $error,
+            file: file!(),
+            line: line!(),
+        }
+    };
+}
+
+struct NalgangError {
+    kind: NalgangErrorInner,
+    file: &'static str,
+    line: u32,
+}
+
+enum NalgangErrorInner {
     DuplicateAttendance,
     DuplicateMemberRegister,
     DuplicateGuildRegister,
     MemberNotExist,
     GuildNotExist,
     BufferError(std::fmt::Error),
-    UnhandledDatabaseError {
-        error: sqlx::Error,
-        file: &'static str,
-        line: u32,
-    },
+    UnhandledDatabaseError(sqlx::Error),
 }
 
 impl fmt::Display for NalgangError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            NalgangError::UnhandledDatabaseError { error, file, line } => {
-                format!("UnhandledDatabaseError: {} at {}:{}", error, file, line)
-            }
-            NalgangError::MemberNotExist => "MemberNotExist".to_string(),
-            NalgangError::DuplicateMemberRegister => "DuplicateMemberRegister".to_string(),
-            NalgangError::DuplicateGuildRegister => "DuplicateGuildRegister".to_string(),
-            NalgangError::DuplicateAttendance => "DuplicateAttendance".to_string(),
-            _  => todo!()
+        let s = match &self.kind {
+            NalgangErrorInner::DuplicateAttendance => "duplicate attendance".to_string(),
+            NalgangErrorInner::DuplicateMemberRegister => "duplciate member register".to_string(),
+            NalgangErrorInner::DuplicateGuildRegister => "duplicate guild register".to_string(),
+            NalgangErrorInner::MemberNotExist => "member not exist".to_string(),
+            NalgangErrorInner::GuildNotExist => "guild_not_exist".to_string(),
+            NalgangErrorInner::BufferError(_) => "buffer error".to_string(),
+            NalgangErrorInner::UnhandledDatabaseError(e) => e.to_string(),
         };
-        write!(f, "{}", s)
+        writeln!(f, "{} error raised at {}:{}", s, self.file, self.line)
     }
 }
 
@@ -140,11 +151,7 @@ impl Handler {
             }
             Err(e) => match e {
                 sqlx::Error::RowNotFound => Ok(false),
-                _ => Err(NalgangError::UnhandledDatabaseError {
-                    error: e,
-                    file: file!(),
-                    line: line!(),
-                }),
+                _ => Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
             },
         }
     }
@@ -167,11 +174,7 @@ impl Handler {
         .await
         {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            }),
+            Err(e) => Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
         }
     }
 
@@ -180,11 +183,7 @@ impl Handler {
             .execute(&self.database)
             .await
         {
-            Err(e) => Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            }),
+            Err(e) => Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
             Ok(_) => Ok(()),
         }
     }
@@ -197,15 +196,9 @@ impl Handler {
         .fetch_one(&self.database)
         .await
         {
-            Ok(1) => return Err(NalgangError::DuplicateGuildRegister),
+            Ok(1) => return Err(nalgang_error!(NalgangErrorInner::DuplicateGuildRegister)),
             Ok(0) => (),
-            Err(e) => {
-                return Err(NalgangError::UnhandledDatabaseError {
-                    error: e,
-                    file: file!(),
-                    line: line!(),
-                })
-            }
+            Err(e) => return Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
             _ => unreachable!(),
         };
 
@@ -214,24 +207,20 @@ impl Handler {
             .await
         {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            }),
+            Err(e) => Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
         }
     }
 
     async fn command_point(&self, member: &mut NalgangMember) -> Result<(), NalgangError> {
         match self.get_member_info(member).await? {
             true => Ok(()),
-            false => Err(NalgangError::MemberNotExist),
+            false => Err(nalgang_error!(NalgangErrorInner::MemberNotExist)),
         }
     }
 
     async fn command_register(&self, member: &mut NalgangMember) -> Result<(), NalgangError> {
         if self.get_member_info(member).await? {
-            return Err(NalgangError::DuplicateMemberRegister);
+            return Err(nalgang_error!(NalgangErrorInner::DuplicateMemberRegister));
         }
 
         let (uid, gid) = (member.uid, member.gid);
@@ -244,11 +233,7 @@ impl Handler {
         .await
         {
             Ok(_) => Ok(()),
-            Err(e) => Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            }),
+            Err(e) => Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
         }
     }
 
@@ -259,7 +244,7 @@ impl Handler {
         message: String,
     ) -> Result<i64, NalgangError> {
         if !self.get_member_info(member).await? {
-            return Err(NalgangError::MemberNotExist);
+            return Err(nalgang_error!(NalgangErrorInner::MemberNotExist));
         }
 
         let (gid, uid, member_hit_time) = (member.gid, member.uid, member.hit_time.unwrap());
@@ -273,16 +258,10 @@ impl Handler {
         )
         .fetch_one(&self.database)
         .await
-        .map_err(|e| 
-            match e {
-                sqlx::Error::RowNotFound => NalgangError::GuildNotExist,
-                _ => NalgangError::UnhandledDatabaseError {
-                    error: e,
-                    file: file!(),
-                    line: line!(),
-                }
-            }
-        )?;
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => nalgang_error!(NalgangErrorInner::GuildNotExist),
+            _ => nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e)),
+        })?;
         let guild_hit_count = guild_entry.hit_count;
         let guild_hit_time = guild_entry.hit_time;
 
@@ -297,7 +276,7 @@ impl Handler {
             // Raise error if user tries to do duplicate hit.
             // boundary_time - 86400 <= t < current_time < boundary_time, then duplicate hit!
             if (rank_boundary_time - 86400) <= member_hit_time {
-                return Err(NalgangError::DuplicateAttendance);
+                return Err(nalgang_error!(NalgangErrorInner::DuplicateAttendance));
             }
             guild_hit_count + 1
         };
@@ -310,11 +289,7 @@ impl Handler {
         )
         .execute(&self.database)
         .await
-        .map_err(|e| NalgangError::UnhandledDatabaseError {
-            error: e,
-            file: file!(),
-            line: line!(),
-        })?;
+        .map_err(|e| nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e)))?;
 
         let combo = if current_time >= combo_boundary_time {
             1
@@ -331,22 +306,14 @@ impl Handler {
         let _ = sqlx::query!(
             "INSERT INTO DailyAttendance (guild_id, user_id, hit_message, hit_time) VALUES (?, ?, ?, ?)",
             gid, uid, message, current_time
-        ).execute(&self.database).await.map_err(|e| NalgangError::UnhandledDatabaseError {
-            error: e,
-            file: file!(),
-            line: line!(),
-        })?;
+        ).execute(&self.database).await.map_err(|e| nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e)))?;
 
         // Insert AttendanceHistory
         let _ = sqlx::query!(
             "INSERT INTO AttendanceHistory (guild_id, user_id, hit_message, hit_time, hit_score, hit_combo, hit_rank)
                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             gid, uid, message, current_time, new_score, combo, rank
-        ).execute(&self.database).await.map_err(|e| NalgangError::UnhandledDatabaseError {
-            error: e,
-            file: file!(),
-            line: line!(),
-        })?;
+        ).execute(&self.database).await.map_err(|e| nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e)))?;
 
         // TODO: Retrieve today's attendance board
         Ok(earned_point)
@@ -404,15 +371,12 @@ impl Handler {
                     let user_name = member.display_name();
 
                     let message = row.hit_message.clone().unwrap_or_default();
-                    writeln!(&mut content, "{}. {}: {}", index + 1, user_name, message).map_err(NalgangError::BufferError)?;
+                    writeln!(&mut content, "{}. {}: {}", index + 1, user_name, message)
+                        .map_err(|e| nalgang_error!(NalgangErrorInner::BufferError(e)))?;
                 }
                 Ok(content)
             }
-            Err(e) => Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            }),
+            Err(e) => Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
         }
     }
 
@@ -431,16 +395,13 @@ impl Handler {
                     let user_id = UserId(row.user_id as u64);
                     let member = guild_id.member(context, user_id).await.unwrap();
                     let user_name = member.display_name();
-                    writeln!(&mut content, "{}. {}점 {}", index + 1, row.score, user_name).map_err(NalgangError::BufferError)?;
+                    writeln!(&mut content, "{}. {}점 {}", index + 1, row.score, user_name)
+                        .map_err(|e| nalgang_error!(NalgangErrorInner::BufferError(e)))?;
                 }
 
                 Ok(content)
             }
-            Err(e) => Err(NalgangError::UnhandledDatabaseError {
-                error: e,
-                file: file!(),
-                line: line!(),
-            }),
+            Err(e) => Err(nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e))),
         }
     }
 }
@@ -467,8 +428,8 @@ impl EventHandler for Handler {
                     let res = self.register_guild(nalgang_member.gid).await;
                     let content = match res {
                         Ok(()) => Ok("서버를 등록했습니다.".to_string()),
-                        Err(e) => match e {
-                            NalgangError::DuplicateGuildRegister => {
+                        Err(e) => match e.kind {
+                            NalgangErrorInner::DuplicateGuildRegister => {
                                 Ok("이미 등록된 서버입니다.".to_string())
                             }
                             _ => Err(e),
@@ -480,8 +441,8 @@ impl EventHandler for Handler {
                     let res = self.command_register(&mut nalgang_member).await;
                     let content = match res {
                         Ok(()) => Ok("계정을 등록했습니다.".to_string()),
-                        Err(e) => match e {
-                            NalgangError::DuplicateMemberRegister => Ok(format!(
+                        Err(e) => match e.kind {
+                            NalgangErrorInner::DuplicateMemberRegister => Ok(format!(
                                 "{}님은 이미 등록되었습니다.",
                                 member.display_name()
                             )),
@@ -555,11 +516,11 @@ impl EventHandler for Handler {
                             };
                         }
                         Err(e) => {
-                            let content = match e {
-                                NalgangError::DuplicateAttendance => {
+                            let content = match e.kind {
+                                NalgangErrorInner::DuplicateAttendance => {
                                     Ok(format!("{}님은 이미 날갱했습니다.", member.display_name()))
                                 }
-                                NalgangError::MemberNotExist => {
+                                NalgangErrorInner::MemberNotExist => {
                                     Ok("등록되지 않은 계정입니다.".to_string())
                                 }
                                 _ => Err(e),
@@ -597,8 +558,8 @@ impl EventHandler for Handler {
                             target_member.score.unwrap(),
                             target_member.combo.unwrap()
                         )),
-                        Err(e) => match e {
-                            NalgangError::MemberNotExist => {
+                        Err(e) => match e.kind {
+                            NalgangErrorInner::MemberNotExist => {
                                 Ok("등록되지 않은 계정입니다.".to_string())
                             }
                             _ => Err(e),
@@ -632,9 +593,10 @@ impl EventHandler for Handler {
                             self.simple_response(&ctx, &command, Err(e)).await;
                         }
                     }
-                },
+                }
                 _ => {
-                    self.simple_response(&ctx, &command, Ok("개발 중인 기능입니다.".to_string())).await;
+                    self.simple_response(&ctx, &command, Ok("개발 중인 기능입니다.".to_string()))
+                        .await;
                 }
             };
         }
@@ -643,68 +605,72 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         println!("{} is connected!", ready.user.name);
 
-        let _commands = Command::set_global_application_commands(&ctx.http, |commands: &mut CreateApplicationCommands| 
-            commands
-                .create_application_command(|command| {
-                    command
-                        .name("날갱")
-                        .description("날갱합니다.")
-                        .create_option(|option| {
-                            option
-                                .name("인사말")
-                                .description("아무말이나 입력하세요.")
-                                .kind(CommandOptionType::String)
-                                .required(false)
-                        })
-                })
-                .create_application_command(|command| {
-                    command
-                        .name("등록")
-                        .description("날갱 시스템에 등록합니다.")
-                })
-                .create_application_command(|command| {
-                    command
-                        .name("점수")
-                        .description("현재 날갱점수를 확인합니다.")
-                        .create_option(|option| {
-                            option
-                                .name("이름")
-                                .description("점수를 확인하고 싶은 계정을 입력해주세요.")
-                                .kind(CommandOptionType::User)
-                                .required(false)
-                        })
-                })
-                .create_application_command(|command| {
-                    command
-                        .name("서버등록")
-                        .description("서버를 날갱 시스템에 등록합니다.")
-                })
-                .create_application_command(|command| {
-                    command.name("랭킹").description("순위를 확인합니다.")
-                })
-                .create_application_command(|command| {
-                    command
-                        .name("보내기")
-                        .description("자신의 날갱점수를 다른 사람에게 보냅니다.")
-                        .create_option(|option| {
-                            option
-                                .name("이름")
-                                .description("점수를 보낼 계정을 입력해주세요.")
-                                .kind(CommandOptionType::User)
-                                .required(true)
-                        })
-                })
-                .create_application_command(|command| {
-                    command
-                        .name("토큰발급")
-                        .description("날갱 API를 이용할 수 있는 토큰을 발급합니다.")
-                })
-                .create_application_command(|command| {
-                    command
-                        .name("토큰삭제")
-                        .description("소유 중인 API 토큰을 삭제합니다.")
-                })
-            ).await;
+        let _commands = Command::set_global_application_commands(
+            &ctx.http,
+            |commands: &mut CreateApplicationCommands| {
+                commands
+                    .create_application_command(|command| {
+                        command
+                            .name("날갱")
+                            .description("날갱합니다.")
+                            .create_option(|option| {
+                                option
+                                    .name("인사말")
+                                    .description("아무말이나 입력하세요.")
+                                    .kind(CommandOptionType::String)
+                                    .required(false)
+                            })
+                    })
+                    .create_application_command(|command| {
+                        command
+                            .name("등록")
+                            .description("날갱 시스템에 등록합니다.")
+                    })
+                    .create_application_command(|command| {
+                        command
+                            .name("점수")
+                            .description("현재 날갱점수를 확인합니다.")
+                            .create_option(|option| {
+                                option
+                                    .name("이름")
+                                    .description("점수를 확인하고 싶은 계정을 입력해주세요.")
+                                    .kind(CommandOptionType::User)
+                                    .required(false)
+                            })
+                    })
+                    .create_application_command(|command| {
+                        command
+                            .name("서버등록")
+                            .description("서버를 날갱 시스템에 등록합니다.")
+                    })
+                    .create_application_command(|command| {
+                        command.name("랭킹").description("순위를 확인합니다.")
+                    })
+                    .create_application_command(|command| {
+                        command
+                            .name("보내기")
+                            .description("자신의 날갱점수를 다른 사람에게 보냅니다.")
+                            .create_option(|option| {
+                                option
+                                    .name("이름")
+                                    .description("점수를 보낼 계정을 입력해주세요.")
+                                    .kind(CommandOptionType::User)
+                                    .required(true)
+                            })
+                    })
+                    .create_application_command(|command| {
+                        command
+                            .name("토큰발급")
+                            .description("날갱 API를 이용할 수 있는 토큰을 발급합니다.")
+                    })
+                    .create_application_command(|command| {
+                        command
+                            .name("토큰삭제")
+                            .description("소유 중인 API 토큰을 삭제합니다.")
+                    })
+            },
+        )
+        .await;
         // println!("{:?}", _commands.unwrap());
     }
 }
