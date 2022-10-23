@@ -10,4 +10,5 @@ sqlx = { version = "0.6.0", features = ["runtime-tokio-rustls", "sqlite", "offli
 serenity = {version = "0.11.5", default-features = false, features = ["client", "gateway", "rustls_backend", "model", "unstable_discord_api", "time", "cache", "http"] }
 tokio = { version = "1.12.0", features = ["macros", "rt-multi-thread"] }
 dotenv = { version="0.15.0"}
+rand = {version="0.8.5"}
 chrono="0.4.20"

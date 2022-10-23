@@ -13,6 +13,7 @@ use serenity::{
         guild::{Guild, Member},
         id::GuildId,
         id::UserId,
+        permissions::Permissions,
         prelude::command::CommandOptionType,
         prelude::interaction::{
             application_command::{ApplicationCommandInteraction, CommandDataOptionValue},
@@ -22,6 +23,8 @@ use serenity::{
     },
     Client,
 };
+
+mod utils;
 
 // Struct for database interaction
 struct Handler {
@@ -85,6 +88,7 @@ enum NalgangErrorInner {
     DuplicateAttendance,
     DuplicateMemberRegister,
     DuplicateGuildRegister,
+    DuplidateTokenIssue,
     MemberNotExist,
     GuildNotExist,
     BufferError(std::fmt::Error),
@@ -97,6 +101,7 @@ impl fmt::Display for NalgangError {
             NalgangErrorInner::DuplicateAttendance => "duplicate attendance".to_string(),
             NalgangErrorInner::DuplicateMemberRegister => "duplciate member register".to_string(),
             NalgangErrorInner::DuplicateGuildRegister => "duplicate guild register".to_string(),
+            NalgangErrorInner::DuplidateTokenIssue => "duplciate token issue".to_string(),
             NalgangErrorInner::MemberNotExist => "member not exist".to_string(),
             NalgangErrorInner::GuildNotExist => "guild_not_exist".to_string(),
             NalgangErrorInner::BufferError(_) => "buffer error".to_string(),
@@ -314,9 +319,42 @@ impl Handler {
                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             gid, uid, message, current_time, new_score, combo, rank
         ).execute(&self.database).await.map_err(|e| nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e)))?;
-
-        // TODO: Retrieve today's attendance board
         Ok(earned_point)
+    }
+
+    async fn command_token_issue(&self, member: &NalgangMember) -> Result<String, NalgangError> {
+        let token = utils::generate_random_bytes();
+        let r = sqlx::query!(
+            "insert or ignore into Token (guild_id, user_id, token) VALUES (?, ?, ?)",
+            member.gid,
+            member.uid,
+            token
+        )
+        .execute(&self.database)
+        .await
+        .map_err(|e| nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e)))?;
+
+        match r.rows_affected() {
+            1 => Ok(token),
+            0 => Err(nalgang_error!(NalgangErrorInner::DuplidateTokenIssue)),
+            _ => unreachable!(),
+        }
+    }
+
+    async fn command_token_delete(&self, member: &NalgangMember) -> Result<bool, NalgangError> {
+        let r = sqlx::query!(
+            "delete from Token where guild_id=? and user_id=?",
+            member.gid,
+            member.uid
+        )
+        .execute(&self.database)
+        .await
+        .map_err(|e| nalgang_error!(NalgangErrorInner::UnhandledDatabaseError(e)))?;
+        match r.rows_affected() {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => unreachable!(),
+        }
     }
 
     async fn simple_response(
@@ -324,6 +362,7 @@ impl Handler {
         ctx: &Context,
         command: &ApplicationCommandInteraction,
         message: Result<String, NalgangError>,
+        ephemeral: bool,
     ) {
         let content = match message {
             Ok(s) => s,
@@ -337,7 +376,9 @@ impl Handler {
             .create_interaction_response(&ctx.http, |response| {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(content))
+                    .interaction_response_data(|message| {
+                        message.content(content).ephemeral(ephemeral)
+                    })
             })
             .await
         {
@@ -435,7 +476,7 @@ impl EventHandler for Handler {
                             _ => Err(e),
                         },
                     };
-                    self.simple_response(&ctx, &command, content).await;
+                    self.simple_response(&ctx, &command, content, false).await;
                 }
                 "등록" | "register" => {
                     let res = self.command_register(&mut nalgang_member).await;
@@ -449,7 +490,7 @@ impl EventHandler for Handler {
                             _ => Err(e),
                         },
                     };
-                    self.simple_response(&ctx, &command, content).await;
+                    self.simple_response(&ctx, &command, content, false).await;
                 }
 
                 "날갱" | "nalgang" => {
@@ -511,7 +552,7 @@ impl EventHandler for Handler {
                                 }
                                 Err(e) => {
                                     println!("{}", e);
-                                    self.simple_response(&ctx, &command, Err(e)).await;
+                                    self.simple_response(&ctx, &command, Err(e), false).await;
                                 }
                             };
                         }
@@ -525,7 +566,7 @@ impl EventHandler for Handler {
                                 }
                                 _ => Err(e),
                             };
-                            self.simple_response(&ctx, &command, content).await;
+                            self.simple_response(&ctx, &command, content, false).await;
                         }
                     }
                 }
@@ -565,7 +606,7 @@ impl EventHandler for Handler {
                             _ => Err(e),
                         },
                     };
-                    self.simple_response(&ctx, &command, content).await;
+                    self.simple_response(&ctx, &command, content, false).await;
                 }
                 "랭킹" => {
                     let ranking_result = self.ranking_collect(&ctx, nalgang_member.gid).await;
@@ -590,13 +631,43 @@ impl EventHandler for Handler {
                         }
                         Err(e) => {
                             println!("{}", e);
-                            self.simple_response(&ctx, &command, Err(e)).await;
+                            self.simple_response(&ctx, &command, Err(e), false).await;
                         }
                     }
                 }
+                "토큰발급" => {
+                    let content = match self.command_token_issue(&nalgang_member).await {
+                        Ok(token) => Ok(format!("토큰이 발급되었습니다: {}", token)),
+                        Err(e) => match e.kind {
+                            NalgangErrorInner::DuplidateTokenIssue => {
+                                Ok("이미 발급된 토큰이 존재합니다.".to_string())
+                            }
+                            _ => Err(e),
+                        },
+                    };
+                    self.simple_response(&ctx, &command, content, true).await;
+                }
+                "토큰삭제" => {
+                    let content = match self.command_token_delete(&nalgang_member).await {
+                        Ok(b) => {
+                            if b {
+                                Ok("토큰이 삭제되었습니다.".to_string())
+                            } else {
+                                Ok("발급된 토큰이 없습니다.".to_string())
+                            }
+                        }
+                        Err(e) => Err(e),
+                    };
+                    self.simple_response(&ctx, &command, content, true).await;
+                }
                 _ => {
-                    self.simple_response(&ctx, &command, Ok("개발 중인 기능입니다.".to_string()))
-                        .await;
+                    self.simple_response(
+                        &ctx,
+                        &command,
+                        Ok("개발 중인 기능입니다.".to_string()),
+                        false,
+                    )
+                    .await;
                 }
             };
         }
@@ -662,11 +733,13 @@ impl EventHandler for Handler {
                         command
                             .name("토큰발급")
                             .description("날갱 API를 이용할 수 있는 토큰을 발급합니다.")
+                            .default_member_permissions(Permissions::ADMINISTRATOR)
                     })
                     .create_application_command(|command| {
                         command
                             .name("토큰삭제")
                             .description("소유 중인 API 토큰을 삭제합니다.")
+                            .default_member_permissions(Permissions::ADMINISTRATOR)
                     })
             },
         )

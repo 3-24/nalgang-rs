@@ -35,3 +35,11 @@ CREATE TABLE IF NOT EXISTS AttendanceHistory
     hit_combo integer NOT NULL,
     hit_rank integer NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS Token
+(
+    guild_id integer NOT NULL,
+    user_id integer NOT NULL,
+    token char(32),
+    primary key(guild_id, user_id)
+)
